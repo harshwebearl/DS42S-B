@@ -204,7 +204,12 @@ async function seedInitialData() {
       // Generate Installment Dues for this member for the 3 installments
       for (const inst of instDocs) {
         const dueId = `DUE-2026-${m.id.replace('SDS-', '')}-0${inst.installmentNumber}`;
-        const existingDue = await MemberInstallmentDue.findOne({ memberId: member._id, installmentId: inst._id });
+        const existingDue = await MemberInstallmentDue.findOne({
+          $or: [
+            { memberId: member._id, installmentId: inst._id },
+            { dueId }
+          ]
+        });
         if (!existingDue) {
           const due = await MemberInstallmentDue.create({
             dueId,
