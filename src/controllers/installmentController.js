@@ -4,6 +4,7 @@ const FinancialYear = require('../models/FinancialYear');
 const Member = require('../models/Member');
 const PenaltyMaster = require('../models/PenaltyMaster');
 const LedgerEntry = require('../models/LedgerEntry');
+const PaymentApplication = require('../models/PaymentApplication');
 const { rupeesToPaise, paiseToRupees, formatINR } = require('../utils/currency');
 const { generateSequentialId } = require('../utils/idGenerator');
 const { logAuditEvent } = require('../middleware/audit');
@@ -284,6 +285,65 @@ async function updateInstallment(req, res, next) {
   }
 }
 
+// Delete Installment
+async function deleteInstallment(req, res, next) {
+  try {
+    const { id } = req.params;
+    const installment = await InstallmentMaster.findById(id).populate('financialYearId');
+    if (!installment) {
+      return res.status(404).json({ success: false, message: 'Installment not found.' });
+    }
+
+    // 1. Check if any payments are collected against this installment's dues
+    const dues = await MemberInstallmentDue.find({ installmentId: installment._id });
+    const collectedDuesCount = dues.filter(d => (d.paidAmountPaise && d.paidAmountPaise > 0) || d.status === 'PAID' || d.status === 'PARTIAL').length;
+
+    const dueIds = dues.map(d => d._id);
+    const paymentApplicationsCount = await PaymentApplication.countDocuments({
+      installmentDueId: { $in: dueIds }
+    });
+
+    if (collectedDuesCount > 0 || paymentApplicationsCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete "${installment.installmentTitle}". Payments have already been collected for ${collectedDuesCount} member(s). You can change its status to INACTIVE or CLOSED instead.`
+      });
+    }
+
+    // 2. If dues were generated but NO payments were collected, clean up dues & associated ledger entries
+    if (dues.length > 0) {
+      const dueIdStrings = dues.map(d => d.dueId);
+      await LedgerEntry.deleteMany({
+        entryType: 'INSTALLMENT_DUE',
+        referenceId: { $in: dueIdStrings }
+      });
+      await MemberInstallmentDue.deleteMany({ installmentId: installment._id });
+    }
+
+    // 3. Delete the installment master record
+    await InstallmentMaster.findByIdAndDelete(installment._id);
+
+    await logAuditEvent({
+      req,
+      action: 'INSTALLMENT_DELETED',
+      entityType: 'InstallmentMaster',
+      entityId: installment._id,
+      details: {
+        installmentId: installment.installmentId,
+        installmentTitle: installment.installmentTitle,
+        year: installment.financialYearId?.yearName
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Installment "${installment.installmentTitle}" deleted successfully.`
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Get Member Dues (All dues for a specific member)
 async function getMemberDues(req, res, next) {
   try {
@@ -425,5 +485,6 @@ module.exports = {
   getInstallments,
   generateMemberDues,
   updateInstallment,
+  deleteInstallment,
   getMemberDues
 };
