@@ -11,15 +11,20 @@ const { generateSequentialId } = require('../utils/idGenerator');
 const { logAuditEvent } = require('../middleware/audit');
 
 // Helper to apply payment amount to member dues sequentially
-async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, isConfirmed, session }) {
+async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, isConfirmed, session, selectedDueIds }) {
   let remainingPaise = amountToApplyPaise;
   const applications = [];
 
-  // 1. First apply to oldest unpaid/partial installment dues
-  const dues = await MemberInstallmentDue.find({
+  const dueQuery = {
     memberId,
     status: { $in: ['PENDING', 'PARTIAL', 'OVERDUE'] }
-  }).sort({ dueDate: 1 }).session(session);
+  };
+  if (selectedDueIds && Array.isArray(selectedDueIds) && selectedDueIds.length > 0) {
+    dueQuery._id = { $in: selectedDueIds };
+  }
+
+  // 1. First apply to selected unpaid/partial installment dues (sorted by dueDate)
+  const dues = await MemberInstallmentDue.find(dueQuery).sort({ dueDate: 1 }).session(session);
 
   for (const due of dues) {
     if (remainingPaise <= 0) break;
@@ -107,7 +112,8 @@ async function createSinglePayment(req, res, next) {
       financialYearId,
       chequeDetails,
       referenceNumber,
-      remarks
+      remarks,
+      selectedDueIds
     } = req.body;
 
     if (!memberId || !paymentMode || amountRupees === undefined) {
@@ -181,7 +187,8 @@ async function createSinglePayment(req, res, next) {
       allocationId: allocation._id,
       amountToApplyPaise: amountPaise,
       isConfirmed,
-      session
+      session,
+      selectedDueIds
     });
 
     // If confirmed immediately (cash/UPI/bank transfer), write Ledger Entry (Credit)
@@ -400,7 +407,8 @@ async function createBulkPayment(req, res, next) {
         allocationId: allocation._id,
         amountToApplyPaise: allocPaise,
         isConfirmed,
-        session
+        session,
+        selectedDueIds: item.selectedDueIds
       });
 
       // If cleared immediately (cash/UPI/transfer), create member ledger entry
