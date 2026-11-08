@@ -293,7 +293,7 @@ async function getMembers(req, res, next) {
 
     const members = await Member.find(filter)
       .populate('villageId', 'villageId name district')
-      .collation({ locale: 'en', strength: 2 })
+      .collation({ locale: 'en', strength: 2, numericOrdering: true })
       .sort(sortOptions)
       .skip(skip)
       .limit(parseInt(limit))
