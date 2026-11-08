@@ -23,6 +23,16 @@ const directorSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  designation: {
+    type: String,
+    trim: true,
+    default: 'Director'
+  },
+  role: {
+    type: String,
+    enum: ['SUPER_ADMIN', 'DIRECTOR', 'MANAGER'],
+    default: 'DIRECTOR'
+  },
   resetPasswordToken: {
     type: String
   },

@@ -28,6 +28,7 @@ const claimChequeRoutes = require('./src/routes/claimChequeRoutes');
 const dashboardRoutes = require('./src/routes/dashboardRoutes');
 const reportRoutes = require('./src/routes/reportRoutes');
 const auditRoutes = require('./src/routes/auditRoutes');
+const userRoutes = require('./src/routes/userRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -72,6 +73,7 @@ app.use('/api/claim-cheques', claimChequeRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/audit-logs', auditRoutes);
+app.use('/api/users', userRoutes);
 
 // Serve frontend static build in production with explicit MIME types
 const frontendDist = path.join(__dirname, '../frontend/dist');
