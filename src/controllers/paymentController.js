@@ -5,6 +5,7 @@ const PaymentApplication = require('../models/PaymentApplication');
 const MemberInstallmentDue = require('../models/MemberInstallmentDue');
 const MemberPenalty = require('../models/MemberPenalty');
 const Member = require('../models/Member');
+const PenaltyMaster = require('../models/PenaltyMaster');
 const LedgerEntry = require('../models/LedgerEntry');
 const { rupeesToPaise, paiseToRupees, formatINR } = require('../utils/currency');
 const { generateSequentialId } = require('../utils/idGenerator');
@@ -25,6 +26,14 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
 
   // 1. First apply to selected unpaid/partial installment dues (sorted by dueDate)
   const dues = await MemberInstallmentDue.find(dueQuery).sort({ dueDate: 1 }).session(session);
+
+  const latePenaltyMaster = await PenaltyMaster.findOne({
+    applicableRule: 'AFTER_DUE_DATE',
+    status: 'ACTIVE'
+  }).session(session) || await PenaltyMaster.findOne({ status: 'ACTIVE' }).session(session);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   for (const due of dues) {
     if (remainingPaise <= 0) break;
@@ -53,6 +62,65 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
       }
 
       remainingPaise -= paymentForThisDue;
+    }
+
+    // Check if 3 months have passed since due date:
+    if (due.dueDate && latePenaltyMaster) {
+      const dueDate = new Date(due.dueDate);
+      dueDate.setHours(0, 0, 0, 0);
+      const threeMonthsDate = new Date(dueDate);
+      threeMonthsDate.setMonth(threeMonthsDate.getMonth() + 3);
+      threeMonthsDate.setHours(0, 0, 0, 0);
+
+      if (today >= threeMonthsDate) {
+        let penaltyPaise = latePenaltyMaster.type === 'FIXED'
+          ? latePenaltyMaster.rateOrAmount
+          : Math.round((due.originalAmountPaise * latePenaltyMaster.rateOrAmount) / 100);
+
+        if (penaltyPaise > 0) {
+          // Check if already created for this due
+          const existingPen = await MemberPenalty.findOne({
+            memberId,
+            penaltyMasterId: latePenaltyMaster._id,
+            reason: { $regex: due.dueId }
+          }).session(session);
+
+          if (!existingPen) {
+            const memberPenaltyId = await generateSequentialId(MemberPenalty, 'memberPenaltyId', 'MPEN', 5);
+            await MemberPenalty.create([{
+              memberPenaltyId,
+              memberId,
+              penaltyMasterId: latePenaltyMaster._id,
+              title: `${latePenaltyMaster.title} (3+ Months Overdue - ${due.dueId})`,
+              amountPaise: penaltyPaise,
+              paidAmountPaise: 0,
+              waivedAmountPaise: 0,
+              outstandingAmountPaise: penaltyPaise,
+              status: 'PENDING',
+              reason: `Auto-assessed: Installment due date was ${due.dueDate.toISOString().split('T')[0]}, exceeded 3 months [${due.dueId}]`
+            }], { session });
+
+            // Post debit to member ledger for this penalty
+            if (isConfirmed) {
+              const lastLedger = await LedgerEntry.findOne({ memberId }).sort({ transactionDate: -1, createdAt: -1 }).session(session);
+              const prevBal = lastLedger ? lastLedger.runningBalancePaise : 0;
+              const ledId = await generateSequentialId(LedgerEntry, 'ledgerId', 'LED', 5);
+              await LedgerEntry.create([{
+                ledgerId: ledId,
+                memberId,
+                transactionDate: new Date(),
+                entryType: 'PENALTY',
+                referenceId: memberPenaltyId,
+                description: `Penalty Assessed: 3+ Months Overdue on ${due.dueId}`,
+                debitPaise: penaltyPaise,
+                creditPaise: 0,
+                runningBalancePaise: prevBal + penaltyPaise,
+                status: 'POSTED'
+              }], { session });
+            }
+          }
+        }
+      }
     }
   }
 
@@ -408,7 +476,7 @@ async function createBulkPayment(req, res, next) {
         amountToApplyPaise: allocPaise,
         isConfirmed,
         session,
-        selectedDueIds: item.selectedDueIds
+        selectedDueIds: item.selectedDueIds || (item.selectedDueId ? [item.selectedDueId] : undefined)
       });
 
       // If cleared immediately (cash/UPI/transfer), create member ledger entry

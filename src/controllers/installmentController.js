@@ -2,6 +2,7 @@ const InstallmentMaster = require('../models/InstallmentMaster');
 const MemberInstallmentDue = require('../models/MemberInstallmentDue');
 const FinancialYear = require('../models/FinancialYear');
 const Member = require('../models/Member');
+const PenaltyMaster = require('../models/PenaltyMaster');
 const LedgerEntry = require('../models/LedgerEntry');
 const { rupeesToPaise, paiseToRupees, formatINR } = require('../utils/currency');
 const { generateSequentialId } = require('../utils/idGenerator');
@@ -331,12 +332,35 @@ async function getMemberDues(req, res, next) {
     const todayMidnight = new Date();
     todayMidnight.setHours(0, 0, 0, 0);
 
+    const latePenaltyMaster = await PenaltyMaster.findOne({
+      applicableRule: 'AFTER_DUE_DATE',
+      status: 'ACTIVE'
+    }) || await PenaltyMaster.findOne({ status: 'ACTIVE' });
+
     const formatted = dues.map(d => {
       const isPaid = d.status === 'PAID' || d.outstandingAmountPaise === 0;
       const dueDate = new Date(d.dueDate);
       dueDate.setHours(0, 0, 0, 0);
 
       const isDuePassed = todayMidnight > dueDate;
+
+      // 3 Months Overdue Calculation
+      const threeMonthsDate = new Date(dueDate);
+      threeMonthsDate.setMonth(threeMonthsDate.getMonth() + 3);
+      threeMonthsDate.setHours(0, 0, 0, 0);
+
+      const isThreeMonthsOverdue = !isPaid && (todayMidnight >= threeMonthsDate);
+      const daysOverdue = isDuePassed ? Math.floor((todayMidnight - dueDate) / (1000 * 60 * 60 * 24)) : 0;
+
+      let penaltyAmountPaise = 0;
+      if (isThreeMonthsOverdue && latePenaltyMaster) {
+        if (latePenaltyMaster.type === 'FIXED') {
+          penaltyAmountPaise = latePenaltyMaster.rateOrAmount; // stored in paise
+        } else if (latePenaltyMaster.type === 'PERCENTAGE') {
+          penaltyAmountPaise = Math.round((d.outstandingAmountPaise * latePenaltyMaster.rateOrAmount) / 100);
+        }
+      }
+      const penaltyAmountRupees = paiseToRupees(penaltyAmountPaise);
 
       // Installment is OPEN if active, started, and not already paid
       const inst = d.installmentId;
@@ -347,16 +371,21 @@ async function getMemberDues(req, res, next) {
 
       // Status logic:
       // If paid: 'PAID'
-      // If due date has passed: 'DUE' (Red)
-      // If due date has NOT passed: 'OPEN' (Green)
+      // If 3+ months overdue: 'OVERDUE' (Penalty applicable)
+      // If due date passed (< 3 months): 'DUE'
+      // If due date not passed: 'OPEN'
       let displayStatus = d.status;
       if (isPaid) {
         displayStatus = 'PAID';
+      } else if (isThreeMonthsOverdue) {
+        displayStatus = 'OVERDUE';
       } else if (isDuePassed) {
         displayStatus = 'DUE';
       } else {
         displayStatus = 'OPEN';
       }
+
+      const totalWithPenaltyRupees = paiseToRupees(d.outstandingAmountPaise + penaltyAmountPaise);
 
       return {
         ...d.toObject(),
@@ -368,6 +397,15 @@ async function getMemberDues(req, res, next) {
         outstandingRupees: paiseToRupees(d.outstandingAmountPaise),
         isOpen,
         isDuePassed,
+        isThreeMonthsOverdue,
+        threeMonthsDate: threeMonthsDate.toISOString().split('T')[0],
+        daysOverdue,
+        penaltyApplicable: isThreeMonthsOverdue && penaltyAmountPaise > 0,
+        penaltyAmountPaise,
+        penaltyAmountRupees,
+        penaltyTitle: latePenaltyMaster ? latePenaltyMaster.title : 'Late Payment Penalty',
+        penaltyMasterId: latePenaltyMaster ? latePenaltyMaster._id : null,
+        totalWithPenaltyRupees,
         displayStatus
       };
     });
