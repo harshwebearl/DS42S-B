@@ -28,25 +28,24 @@ async function seedInitialData() {
     console.log('[Seed] Created Director account: director@ds24g.org / Director@2026');
   }
 
-  // 2. Initial Villages of 42 Gnati
-  const villageNames = [
-    { name: 'Mahuva', taluka: 'Mahuva' },
-    { name: 'Talaja', taluka: 'Talaja' },
-    { name: 'Palitana', taluka: 'Palitana' },
-    { name: 'Shihor', taluka: 'Shihor' },
-    { name: 'Bhavnagar City', taluka: 'Bhavnagar' },
-    { name: 'Vallabhipur', taluka: 'Vallabhipur' },
-    { name: 'Gadhada', taluka: 'Gadhada' },
-    { name: 'Savarkundla', taluka: 'Savarkundla' }
-  ];
+  // 2. Initial Villages of 42 Gnati (only if database has no villages yet)
+  const existingVillageCount = await Village.countDocuments();
+  if (existingVillageCount === 0) {
+    const villageNames = [
+      { name: 'Mahuva', taluka: 'Mahuva' },
+      { name: 'Talaja', taluka: 'Talaja' },
+      { name: 'Palitana', taluka: 'Palitana' },
+      { name: 'Shihor', taluka: 'Shihor' },
+      { name: 'Bhavnagar City', taluka: 'Bhavnagar' },
+      { name: 'Vallabhipur', taluka: 'Vallabhipur' },
+      { name: 'Gadhada', taluka: 'Gadhada' },
+      { name: 'Savarkundla', taluka: 'Savarkundla' }
+    ];
 
-  const villageMap = {};
-  for (let i = 0; i < villageNames.length; i++) {
-    const v = villageNames[i];
-    let found = await Village.findOne({ name: v.name });
-    if (!found) {
+    for (let i = 0; i < villageNames.length; i++) {
+      const v = villageNames[i];
       const villageId = `VIL-${String(i + 1).padStart(3, '0')}`;
-      found = await Village.create({
+      await Village.create({
         villageId,
         name: v.name,
         taluka: v.taluka,
@@ -54,9 +53,8 @@ async function seedInitialData() {
         state: 'Gujarat',
         status: 'ACTIVE'
       });
-      console.log(`[Seed] Created Village: ${found.villageId} - ${found.name}`);
+      console.log(`[Seed] Created Village: ${villageId} - ${v.name}`);
     }
-    villageMap[v.name] = found;
   }
 
   // 3. Financial Year Master (Year 2026)
@@ -156,98 +154,7 @@ async function seedInitialData() {
     console.log('[Seed] Created Claim Policy: ₹1,00,000 assistance with Strict Dues requirement');
   }
 
-  // 7. Initial Sample Members (Family Heads) across villages
-  const sampleMembers = [
-    { id: 'SDS-001', name: 'Rameshchandra Mohanlal Shah', mobile: '9825012345', village: 'Mahuva', dob: '1970-05-15', occ: 'Business', nominee: 'Kokilaben R. Shah', rel: 'SPOUSE' },
-    { id: 'SDS-002', name: 'Pravinbhai Keshubhai Mehta', mobile: '9825023456', village: 'Talaja', dob: '1975-08-20', occ: 'Trading', nominee: 'Bhavesh P. Mehta', rel: 'SON' },
-    { id: 'SDS-003', name: 'Dineshbhai Kantilal Doshi', mobile: '9825034567', village: 'Palitana', dob: '1968-11-10', occ: 'Agriculture', nominee: 'Meenaben D. Doshi', rel: 'SPOUSE' },
-    { id: 'SDS-004', name: 'Jayantilal Chhaganlal Vora', mobile: '9825045678', village: 'Shihor', dob: '1980-02-25', occ: 'Professional', nominee: 'Pooja J. Vora', rel: 'DAUGHTER' },
-    { id: 'SDS-005', name: 'Chandrakant Popatlal Parekh', mobile: '9825056789', village: 'Bhavnagar City', dob: '1965-09-05', occ: 'Retired', nominee: 'Hiren C. Parekh', rel: 'SON' }
-  ];
-
-  for (const m of sampleMembers) {
-    let member = await Member.findOne({ memberId: m.id });
-    if (!member) {
-      const vDoc = villageMap[m.village] || villageMap['Mahuva'];
-      member = await Member.create({
-        memberId: m.id,
-        fullName: m.name,
-        mobileNumber: m.mobile,
-        email: `${m.name.split(' ')[0].toLowerCase()}@example.com`,
-        villageId: vDoc._id,
-        dob: new Date(m.dob),
-        joiningDate: new Date('2025-01-01'),
-        occupation: m.occ,
-        gender: 'MALE',
-        maritalStatus: true,
-        address: `Main Bazar, ${m.village}, Dist. Bhavnagar`,
-        panCard: 'ABCDE1234F',
-        aadhaarCard: '987654321234',
-        status: 'ACTIVE'
-      });
-
-      // Nominee
-      const nomId = `NOM-${m.id.replace('SDS-', '')}`;
-      const existingNom = await Nominee.findOne({ nomineeId: nomId });
-      if (!existingNom) {
-        await Nominee.create({
-          nomineeId: nomId,
-          memberId: member._id,
-          nomineeName: m.nominee,
-          relation: m.rel,
-          sharePercentage: 100,
-          priority: 1,
-          status: 'ACTIVE'
-        });
-      }
-
-      // Generate Installment Dues for this member for the 3 installments
-      for (const inst of instDocs) {
-        const dueId = `DUE-2026-${m.id.replace('SDS-', '')}-0${inst.installmentNumber}`;
-        const existingDue = await MemberInstallmentDue.findOne({
-          $or: [
-            { memberId: member._id, installmentId: inst._id },
-            { dueId }
-          ]
-        });
-        if (!existingDue) {
-          const due = await MemberInstallmentDue.create({
-            dueId,
-            memberId: member._id,
-            installmentId: inst._id,
-            financialYearId: fy2026._id,
-            originalAmountPaise: inst.amountPaise,
-            paidAmountPaise: 0,
-            outstandingAmountPaise: inst.amountPaise,
-            status: 'PENDING',
-            dueDate: inst.dueDate
-          });
-
-          // Ledger Debit entry
-          const ledgerId = `LED-2026-${m.id.replace('SDS-', '')}-0${inst.installmentNumber}`;
-          const lastEntry = await LedgerEntry.findOne({ memberId: member._id }).sort({ transactionDate: -1, createdAt: -1 });
-          const prevBal = lastEntry ? lastEntry.runningBalancePaise : 0;
-          await LedgerEntry.create({
-            ledgerId,
-            memberId: member._id,
-            transactionDate: inst.startDate || new Date(),
-            entryType: 'INSTALLMENT_DUE',
-            referenceId: due.dueId,
-            description: `Installment Due: ${inst.installmentTitle} (2026)`,
-            debitPaise: inst.amountPaise,
-            creditPaise: 0,
-            runningBalancePaise: prevBal + inst.amountPaise,
-            status: 'POSTED',
-            financialYearId: fy2026._id
-          });
-        }
-      }
-
-      console.log(`[Seed] Seeded Member ${member.memberId} (${member.fullName}) with dues.`);
-    }
-  }
-
-  console.log('[Seed] Seeding completed successfully.');
+  console.log('[Seed] System master configuration initialized successfully. (Zero dummy members seeded)');
 }
 
 module.exports = {
