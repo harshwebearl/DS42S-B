@@ -12,7 +12,7 @@ const { generateSequentialId } = require('../utils/idGenerator');
 const { logAuditEvent } = require('../middleware/audit');
 
 // Helper to apply payment amount to member dues sequentially
-async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, isConfirmed, session, selectedDueIds }) {
+async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, isConfirmed, session, selectedDueIds, waivePenalty = false, waivedDueIds = [] }) {
   let remainingPaise = amountToApplyPaise;
   const applications = [];
 
@@ -64,8 +64,11 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
       remainingPaise -= paymentForThisDue;
     }
 
+    // Check if penalty for this specific due was waived by director
+    const isDueWaived = Boolean(waivePenalty) || (Array.isArray(waivedDueIds) && waivedDueIds.some(id => String(id) === String(due._id)));
+
     // Check if 3 months have passed since due date:
-    if (due.dueDate && latePenaltyMaster) {
+    if (!isDueWaived && due.dueDate && latePenaltyMaster) {
       const dueDate = new Date(due.dueDate);
       dueDate.setHours(0, 0, 0, 0);
       const threeMonthsDate = new Date(dueDate);
@@ -121,11 +124,25 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
           }
         }
       }
+    } else if (isDueWaived && due.dueDate) {
+      // If director waived the penalty, mark any previously assessed pending penalty for this due as WAIVED
+      const existingPen = await MemberPenalty.findOne({
+        memberId,
+        status: { $in: ['PENDING', 'PARTIAL'] },
+        reason: { $regex: due.dueId }
+      }).session(session);
+
+      if (existingPen) {
+        existingPen.waivedAmountPaise += existingPen.outstandingAmountPaise;
+        existingPen.outstandingAmountPaise = 0;
+        existingPen.status = 'WAIVED';
+        await existingPen.save({ session });
+      }
     }
   }
 
-  // 2. If remaining money exists, apply to outstanding penalties
-  if (remainingPaise > 0) {
+  // 2. If remaining money exists and penalty is not waived, apply to outstanding penalties
+  if (!waivePenalty && remainingPaise > 0) {
     const penalties = await MemberPenalty.find({
       memberId,
       status: { $in: ['PENDING', 'PARTIAL'] }
@@ -181,7 +198,9 @@ async function createSinglePayment(req, res, next) {
       chequeDetails,
       referenceNumber,
       remarks,
-      selectedDueIds
+      selectedDueIds,
+      waivePenalty = false,
+      waivedDueIds = []
     } = req.body;
 
     if (!memberId || !paymentMode || amountRupees === undefined) {
@@ -256,7 +275,9 @@ async function createSinglePayment(req, res, next) {
       amountToApplyPaise: amountPaise,
       isConfirmed,
       session,
-      selectedDueIds
+      selectedDueIds,
+      waivePenalty: Boolean(waivePenalty),
+      waivedDueIds
     });
 
     // If confirmed immediately (cash/UPI/bank transfer), write Ledger Entry (Credit)
@@ -476,7 +497,9 @@ async function createBulkPayment(req, res, next) {
         amountToApplyPaise: allocPaise,
         isConfirmed,
         session,
-        selectedDueIds: item.selectedDueIds || (item.selectedDueId ? [item.selectedDueId] : undefined)
+        selectedDueIds: item.selectedDueIds || (item.selectedDueId ? [item.selectedDueId] : undefined),
+        waivePenalty: Boolean(item.waivePenalty),
+        waivedDueIds: item.waivedDueIds || (item.waivePenalty && item.selectedDueId ? [item.selectedDueId] : [])
       });
 
       // If cleared immediately (cash/UPI/transfer), create member ledger entry
