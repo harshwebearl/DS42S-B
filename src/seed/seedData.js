@@ -187,15 +187,19 @@ async function seedInitialData() {
       });
 
       // Nominee
-      await Nominee.create({
-        nomineeId: `NOM-${m.id.replace('SDS-', '')}`,
-        memberId: member._id,
-        nomineeName: m.nominee,
-        relation: m.rel,
-        sharePercentage: 100,
-        priority: 1,
-        status: 'ACTIVE'
-      });
+      const nomId = `NOM-${m.id.replace('SDS-', '')}`;
+      const existingNom = await Nominee.findOne({ nomineeId: nomId });
+      if (!existingNom) {
+        await Nominee.create({
+          nomineeId: nomId,
+          memberId: member._id,
+          nomineeName: m.nominee,
+          relation: m.rel,
+          sharePercentage: 100,
+          priority: 1,
+          status: 'ACTIVE'
+        });
+      }
 
       // Generate Installment Dues for this member for the 3 installments
       for (const inst of instDocs) {
