@@ -3,6 +3,12 @@ const Member = require('../models/Member');
 const { generateSequentialId } = require('../utils/idGenerator');
 const { logAuditEvent } = require('../middleware/audit');
 
+// Helper to escape regex special characters
+function escapeRegex(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+}
+
 // Create Village
 async function createVillage(req, res, next) {
   try {
@@ -11,20 +17,23 @@ async function createVillage(req, res, next) {
       return res.status(400).json({ success: false, message: 'Village name is required.' });
     }
 
-    const existing = await Village.findOne({ name: { $regex: new RegExp(`^${name.trim()}$`, 'i') } });
+    const trimmedName = name.trim();
+    const existing = await Village.findOne({
+      name: { $regex: new RegExp(`^${escapeRegex(trimmedName)}$`, 'i') }
+    });
     if (existing) {
-      return res.status(400).json({ success: false, message: `Village "${name.trim()}" already exists.` });
+      return res.status(400).json({ success: false, message: `Village "${trimmedName}" already exists.` });
     }
 
     const villageId = await generateSequentialId(Village, 'villageId', 'VIL', 3);
 
     const village = await Village.create({
       villageId,
-      name: name.trim(),
-      taluka: taluka ? taluka.trim() : '',
-      district: district ? district.trim() : 'Bhavnagar',
-      state: state ? state.trim() : 'Gujarat',
-      description: description ? description.trim() : '',
+      name: trimmedName,
+      taluka: typeof taluka === 'string' ? taluka.trim() : (taluka || ''),
+      district: typeof district === 'string' && district.trim() ? district.trim() : 'Bhavnagar',
+      state: typeof state === 'string' && state.trim() ? state.trim() : 'Gujarat',
+      description: typeof description === 'string' ? description.trim() : (description || ''),
       status: 'ACTIVE'
     });
 
@@ -36,7 +45,7 @@ async function createVillage(req, res, next) {
       details: { villageId, name: village.name }
     });
 
-    res.status(201).json({ success: true, message: 'Village created successfully', village });
+    res.status(201).json({ success: true, message: 'Village created successfully', village: { ...village.toObject(), memberCount: 0 } });
   } catch (err) {
     next(err);
   }
@@ -51,12 +60,13 @@ async function getVillages(req, res, next) {
     if (status) {
       filter.status = status;
     }
-    if (search) {
+    if (search && search.trim()) {
+      const escaped = escapeRegex(search.trim());
       filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { villageId: { $regex: search, $options: 'i' } },
-        { taluka: { $regex: search, $options: 'i' } },
-        { district: { $regex: search, $options: 'i' } }
+        { name: { $regex: escaped, $options: 'i' } },
+        { villageId: { $regex: escaped, $options: 'i' } },
+        { taluka: { $regex: escaped, $options: 'i' } },
+        { district: { $regex: escaped, $options: 'i' } }
       ];
     }
 
@@ -106,24 +116,31 @@ async function updateVillage(req, res, next) {
       return res.status(404).json({ success: false, message: 'Village not found.' });
     }
 
-    if (name && name.trim().toLowerCase() !== village.name.toLowerCase()) {
+    if (name !== undefined) {
+      if (!name || !name.trim()) {
+        return res.status(400).json({ success: false, message: 'Village name cannot be empty.' });
+      }
+      const trimmedName = name.trim();
       const existing = await Village.findOne({
         _id: { $ne: village._id },
-        name: { $regex: new RegExp(`^${name.trim()}$`, 'i') }
+        name: { $regex: new RegExp(`^${escapeRegex(trimmedName)}$`, 'i') }
       });
       if (existing) {
-        return res.status(400).json({ success: false, message: `Village "${name.trim()}" already exists.` });
+        return res.status(400).json({ success: false, message: `Village "${trimmedName}" already exists.` });
       }
-      village.name = name.trim();
+      village.name = trimmedName;
     }
 
-    if (taluka !== undefined) village.taluka = taluka.trim();
-    if (district !== undefined) village.district = district.trim();
-    if (state !== undefined) village.state = state.trim();
-    if (description !== undefined) village.description = description.trim();
-    if (status) village.status = status;
+    if (taluka !== undefined) village.taluka = typeof taluka === 'string' ? taluka.trim() : (taluka || '');
+    if (district !== undefined) village.district = typeof district === 'string' && district.trim() ? district.trim() : village.district;
+    if (state !== undefined) village.state = typeof state === 'string' && state.trim() ? state.trim() : village.state;
+    if (description !== undefined) village.description = typeof description === 'string' ? description.trim() : (description || '');
+    if (status && ['ACTIVE', 'INACTIVE'].includes(status)) village.status = status;
 
     await village.save();
+
+    const memberCount = await Member.countDocuments({ villageId: village._id });
+    const updatedVillageObj = { ...village.toObject(), memberCount };
 
     await logAuditEvent({
       req,
@@ -133,13 +150,13 @@ async function updateVillage(req, res, next) {
       details: { villageId: village.villageId, name: village.name, status: village.status }
     });
 
-    res.json({ success: true, message: 'Village updated successfully', village });
+    res.json({ success: true, message: 'Village updated successfully', village: updatedVillageObj });
   } catch (err) {
     next(err);
   }
 }
 
-// Deactivate Village
+// Deactivate / Toggle Village Status
 async function deactivateVillage(req, res, next) {
   try {
     const village = await Village.findById(req.params.id);
@@ -150,6 +167,9 @@ async function deactivateVillage(req, res, next) {
     village.status = village.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     await village.save();
 
+    const memberCount = await Member.countDocuments({ villageId: village._id });
+    const updatedVillageObj = { ...village.toObject(), memberCount };
+
     await logAuditEvent({
       req,
       action: 'VILLAGE_STATUS_TOGGLED',
@@ -158,7 +178,7 @@ async function deactivateVillage(req, res, next) {
       details: { villageId: village.villageId, status: village.status }
     });
 
-    res.json({ success: true, message: `Village status changed to ${village.status}`, village });
+    res.json({ success: true, message: `Village status changed to ${village.status}`, village: updatedVillageObj });
   } catch (err) {
     next(err);
   }
