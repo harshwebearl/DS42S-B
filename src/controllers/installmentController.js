@@ -287,22 +287,96 @@ async function updateInstallment(req, res, next) {
 async function getMemberDues(req, res, next) {
   try {
     const { memberId } = req.params;
+    const { openOnly } = req.query;
+
+    const member = await Member.findById(memberId);
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found.' });
+    }
+
+    // Auto-ensure dues exist for all active installments of the current year
+    if (member.status === 'ACTIVE') {
+      const activeInstallments = await InstallmentMaster.find({ status: 'ACTIVE' }).populate('financialYearId');
+      for (const inst of activeInstallments) {
+        if (!inst.financialYearId) continue;
+        const exists = await MemberInstallmentDue.findOne({ memberId, installmentId: inst._id });
+        if (!exists) {
+          const autoDueId = `DUE-${inst.installmentId.replace('INST-', '')}-${member.memberId}`;
+          const dueIdColl = await MemberInstallmentDue.findOne({ dueId: autoDueId });
+          const finalDueId = dueIdColl ? await generateSequentialId(MemberInstallmentDue, 'dueId', 'DUE', 5) : autoDueId;
+
+          const today = new Date();
+          const isOverdue = today > new Date(inst.dueDate);
+
+          await MemberInstallmentDue.create({
+            dueId: finalDueId,
+            memberId,
+            installmentId: inst._id,
+            financialYearId: inst.financialYearId._id,
+            originalAmountPaise: inst.amountPaise,
+            paidAmountPaise: 0,
+            outstandingAmountPaise: inst.amountPaise,
+            status: isOverdue ? 'OVERDUE' : 'PENDING',
+            dueDate: inst.dueDate
+          });
+        }
+      }
+    }
+
     const dues = await MemberInstallmentDue.find({ memberId })
       .populate('installmentId')
       .populate('financialYearId')
       .sort({ dueDate: 1 });
 
-    const formatted = dues.map(d => ({
-      ...d.toObject(),
-      formattedOriginal: formatINR(d.originalAmountPaise),
-      formattedPaid: formatINR(d.paidAmountPaise),
-      formattedOutstanding: formatINR(d.outstandingAmountPaise),
-      originalRupees: paiseToRupees(d.originalAmountPaise),
-      paidRupees: paiseToRupees(d.paidAmountPaise),
-      outstandingRupees: paiseToRupees(d.outstandingAmountPaise)
-    }));
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
 
-    res.json({ success: true, dues: formatted });
+    const formatted = dues.map(d => {
+      const isPaid = d.status === 'PAID' || d.outstandingAmountPaise === 0;
+      const dueDate = new Date(d.dueDate);
+      dueDate.setHours(0, 0, 0, 0);
+
+      const isDuePassed = todayMidnight > dueDate;
+
+      // Installment is OPEN if active, started, and not already paid
+      const inst = d.installmentId;
+      const startDate = inst && inst.startDate ? new Date(inst.startDate) : null;
+      if (startDate) startDate.setHours(0, 0, 0, 0);
+      const isStarted = !startDate || todayMidnight >= startDate;
+      const isOpen = !isPaid && (!inst || inst.status === 'ACTIVE') && isStarted;
+
+      // Status logic:
+      // If paid: 'PAID'
+      // If due date has passed: 'DUE' (Red)
+      // If due date has NOT passed: 'OPEN' (Green)
+      let displayStatus = d.status;
+      if (isPaid) {
+        displayStatus = 'PAID';
+      } else if (isDuePassed) {
+        displayStatus = 'DUE';
+      } else {
+        displayStatus = 'OPEN';
+      }
+
+      return {
+        ...d.toObject(),
+        formattedOriginal: formatINR(d.originalAmountPaise),
+        formattedPaid: formatINR(d.paidAmountPaise),
+        formattedOutstanding: formatINR(d.outstandingAmountPaise),
+        originalRupees: paiseToRupees(d.originalAmountPaise),
+        paidRupees: paiseToRupees(d.paidAmountPaise),
+        outstandingRupees: paiseToRupees(d.outstandingAmountPaise),
+        isOpen,
+        isDuePassed,
+        displayStatus
+      };
+    });
+
+    const result = openOnly === 'true'
+      ? formatted.filter(d => d.isOpen)
+      : formatted;
+
+    res.json({ success: true, dues: result });
   } catch (err) {
     next(err);
   }
