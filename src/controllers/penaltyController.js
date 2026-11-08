@@ -49,9 +49,125 @@ async function getPenaltyMasters(req, res, next) {
     const list = await PenaltyMaster.find().sort({ createdAt: -1 });
     const formatted = list.map(p => ({
       ...p.toObject(),
-      displayRate: p.type === 'FIXED' ? formatINR(p.rateOrAmount) : `${p.rateOrAmount}%`
+      displayRate: p.type === 'FIXED' ? formatINR(p.rateOrAmount) : `${p.rateOrAmount}%`,
+      rateOrAmountRupees: p.type === 'FIXED' ? paiseToRupees(p.rateOrAmount) : p.rateOrAmount
     }));
     res.json({ success: true, count: formatted.length, penaltyMasters: formatted });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Update Penalty Master
+async function updatePenaltyMaster(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { title, type, rateOrAmount, applicableRule, gracePeriodDays, description, status } = req.body;
+
+    const pm = await PenaltyMaster.findById(id);
+    if (!pm) {
+      return res.status(404).json({ success: false, message: 'Penalty rule not found.' });
+    }
+
+    if (title) pm.title = title.trim();
+    if (type) pm.type = type;
+    if (rateOrAmount !== undefined) {
+      pm.rateOrAmount = (type || pm.type) === 'FIXED' ? rupeesToPaise(rateOrAmount) : Number(rateOrAmount);
+    }
+    if (applicableRule) pm.applicableRule = applicableRule;
+    if (gracePeriodDays !== undefined) pm.gracePeriodDays = Number(gracePeriodDays) || 0;
+    if (description !== undefined) pm.description = description ? description.trim() : '';
+    if (status) pm.status = status;
+
+    await pm.save();
+
+    await logAuditEvent({
+      req,
+      action: 'PENALTY_MASTER_UPDATED',
+      entityType: 'PenaltyMaster',
+      entityId: pm._id,
+      details: { penaltyId: pm.penaltyId, title: pm.title, status: pm.status }
+    });
+
+    res.json({
+      success: true,
+      message: 'Penalty rule updated successfully',
+      penaltyMaster: {
+        ...pm.toObject(),
+        displayRate: pm.type === 'FIXED' ? formatINR(pm.rateOrAmount) : `${pm.rateOrAmount}%`,
+        rateOrAmountRupees: pm.type === 'FIXED' ? paiseToRupees(pm.rateOrAmount) : pm.rateOrAmount
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Toggle Penalty Master Status
+async function togglePenaltyMasterStatus(req, res, next) {
+  try {
+    const { id } = req.params;
+    const pm = await PenaltyMaster.findById(id);
+    if (!pm) {
+      return res.status(404).json({ success: false, message: 'Penalty rule not found.' });
+    }
+
+    pm.status = pm.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    await pm.save();
+
+    await logAuditEvent({
+      req,
+      action: 'PENALTY_MASTER_STATUS_CHANGED',
+      entityType: 'PenaltyMaster',
+      entityId: pm._id,
+      details: { penaltyId: pm.penaltyId, title: pm.title, newStatus: pm.status }
+    });
+
+    res.json({
+      success: true,
+      message: `Penalty rule marked as ${pm.status}`,
+      penaltyMaster: pm
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Delete Penalty Master
+async function deletePenaltyMaster(req, res, next) {
+  try {
+    const { id } = req.params;
+    const pm = await PenaltyMaster.findById(id);
+    if (!pm) {
+      return res.status(404).json({ success: false, message: 'Penalty rule not found.' });
+    }
+
+    // Check if assigned to any member
+    const inUse = await MemberPenalty.exists({ penaltyMasterId: pm._id });
+    if (inUse) {
+      pm.status = 'INACTIVE';
+      await pm.save();
+      return res.json({
+        success: true,
+        message: 'Penalty rule is linked to member records and cannot be permanently deleted. It has been deactivated instead.',
+        penaltyMaster: pm
+      });
+    }
+
+    await pm.deleteOne();
+
+    await logAuditEvent({
+      req,
+      action: 'PENALTY_MASTER_DELETED',
+      entityType: 'PenaltyMaster',
+      entityId: pm._id,
+      details: { penaltyId: pm.penaltyId, title: pm.title }
+    });
+
+    res.json({
+      success: true,
+      message: `Penalty rule ${pm.penaltyId} deleted successfully.`
+    });
   } catch (err) {
     next(err);
   }
@@ -230,6 +346,9 @@ async function getMemberPenalties(req, res, next) {
 module.exports = {
   createPenaltyMaster,
   getPenaltyMasters,
+  updatePenaltyMaster,
+  togglePenaltyMasterStatus,
+  deletePenaltyMaster,
   assignPenaltyToMember,
   waivePenalty,
   getMemberPenalties
