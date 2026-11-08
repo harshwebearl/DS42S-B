@@ -252,7 +252,15 @@ async function bulkImportMembers(req, res, next) {
 // Get Members with filters & pagination
 async function getMembers(req, res, next) {
   try {
-    const { search, villageId, status, page = 1, limit = 50 } = req.query;
+    const {
+      search,
+      villageId,
+      status,
+      page = 1,
+      limit = 50,
+      sortBy = 'memberId',
+      sortOrder = 'asc'
+    } = req.query;
     const filter = {};
 
     if (status) {
@@ -273,9 +281,20 @@ async function getMembers(req, res, next) {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const total = await Member.countDocuments(filter);
 
+    // Sorting logic - Ascending order by default
+    const allowedSortFields = ['memberId', 'fullName', 'joiningDate', 'createdAt', 'status'];
+    const sortField = allowedSortFields.includes(sortBy) ? sortBy : 'memberId';
+    const sortDirection = String(sortOrder).toLowerCase() === 'desc' ? -1 : 1;
+    const sortOptions = {};
+    sortOptions[sortField] = sortDirection;
+    if (sortField !== 'memberId') {
+      sortOptions.memberId = 1;
+    }
+
     const members = await Member.find(filter)
       .populate('villageId', 'villageId name district')
-      .sort({ memberId: 1 })
+      .collation({ locale: 'en', strength: 2 })
+      .sort(sortOptions)
       .skip(skip)
       .limit(parseInt(limit))
       .lean({ virtuals: true });
@@ -285,6 +304,8 @@ async function getMembers(req, res, next) {
       total,
       page: parseInt(page),
       totalPages: Math.ceil(total / parseInt(limit)),
+      sortBy: sortField,
+      sortOrder: sortDirection === -1 ? 'desc' : 'asc',
       members
     });
   } catch (err) {
