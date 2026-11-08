@@ -30,7 +30,7 @@ const directorSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['SUPER_ADMIN', 'DIRECTOR', 'MANAGER'],
+    enum: ['SYSTEM_ADMIN', 'SUPER_ADMIN', 'DIRECTOR', 'MANAGER'],
     default: 'DIRECTOR'
   },
   resetPasswordToken: {

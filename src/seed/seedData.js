@@ -14,7 +14,23 @@ const { generateSequentialId } = require('../utils/idGenerator');
 async function seedInitialData() {
   console.log('[Seed] Checking and seeding initial system records...');
 
-  // 1. Single Authorized Director Account
+  // 1. System Administrator Account
+  let admin = await Director.findOne({ email: 'admin@ds24g.org' });
+  if (!admin) {
+    const adminPasswordHash = await Director.hashPassword('Admin@2026');
+    admin = await Director.create({
+      name: 'System Administrator',
+      email: 'admin@ds24g.org',
+      passwordHash: adminPasswordHash,
+      phone: '+91 98250 00000',
+      designation: 'System Administrator',
+      role: 'SYSTEM_ADMIN',
+      isActive: true
+    });
+    console.log('[Seed] Created System Admin account: admin@ds24g.org / Admin@2026');
+  }
+
+  // 2. Authorized Director Account
   let director = await Director.findOne({ email: 'director@ds24g.org' });
   if (!director) {
     const passwordHash = await Director.hashPassword('Director@2026');
@@ -23,6 +39,8 @@ async function seedInitialData() {
       email: 'director@ds24g.org',
       passwordHash,
       phone: '+91 98765 43210',
+      designation: 'Director',
+      role: 'DIRECTOR',
       isActive: true
     });
     console.log('[Seed] Created Director account: director@ds24g.org / Director@2026');
