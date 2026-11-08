@@ -4,7 +4,11 @@ const { logAuditEvent } = require('../middleware/audit');
 // Get All Directors / Users
 async function getUsers(req, res, next) {
   try {
-    const users = await Director.find()
+    const isSystemAdmin = req.director && req.director.role === 'SYSTEM_ADMIN';
+    // System Admin details must NEVER be exposed to regular Directors
+    const filter = isSystemAdmin ? {} : { role: { $ne: 'SYSTEM_ADMIN' } };
+
+    const users = await Director.find(filter)
       .select('-passwordHash -resetPasswordToken -resetPasswordExpires')
       .sort({ createdAt: -1 });
 
@@ -38,6 +42,13 @@ async function createUser(req, res, next) {
 
     if (!password || password.length < 6) {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters long.' });
+    }
+
+    if (role === 'SYSTEM_ADMIN' && (!req.director || req.director.role !== 'SYSTEM_ADMIN')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only System Admin can create another System Admin account.'
+      });
     }
 
     const cleanEmail = email.toLowerCase().trim();
@@ -91,6 +102,21 @@ async function updateUser(req, res, next) {
     const user = await Director.findById(id);
     if (!user) {
       return res.status(404).json({ success: false, message: 'Director not found.' });
+    }
+
+    // Protect System Admin accounts from being modified or viewed by Directors
+    if (user.role === 'SYSTEM_ADMIN' && (!req.director || req.director.role !== 'SYSTEM_ADMIN')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You cannot modify System Admin accounts.'
+      });
+    }
+
+    if (role === 'SYSTEM_ADMIN' && (!req.director || req.director.role !== 'SYSTEM_ADMIN')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Only System Admin can assign the System Admin role.'
+      });
     }
 
     if (name) user.name = name.trim();
@@ -167,6 +193,19 @@ async function toggleUserStatus(req, res, next) {
       return res.status(404).json({ success: false, message: 'Director not found.' });
     }
 
+    if (user.role === 'SYSTEM_ADMIN') {
+      if (!req.director || req.director.role !== 'SYSTEM_ADMIN') {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. You cannot modify System Admin accounts.'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: 'System Admin account cannot be deactivated.'
+      });
+    }
+
     user.isActive = !user.isActive;
     await user.save();
 
@@ -203,6 +242,13 @@ async function deleteUser(req, res, next) {
     const user = await Director.findById(id);
     if (!user) {
       return res.status(404).json({ success: false, message: 'Director not found.' });
+    }
+
+    if (user.role === 'SYSTEM_ADMIN') {
+      return res.status(400).json({
+        success: false,
+        message: 'System Admin account cannot be deleted.'
+      });
     }
 
     if (user.isActive) {
