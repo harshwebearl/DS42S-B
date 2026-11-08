@@ -5,6 +5,7 @@ const { authDirector } = require('../middleware/auth');
 
 router.use(authDirector);
 
+router.post('/bulk-import', memberController.bulkImportMembers);
 router.post('/', memberController.createMember);
 router.get('/', memberController.getMembers);
 router.get('/:id', memberController.getMemberById);
