@@ -14,13 +14,26 @@ const { paiseToRupees, formatINR } = require('../utils/currency');
 
 // Dispatcher for report generation
 async function generateReportData(reportType, query = {}) {
-  const { villageId, financialYearId, startDate, endDate, status, memberId } = query;
+  const { villageId, villageIds, financialYearId, startDate, endDate, status, memberId } = query;
 
   switch (reportType) {
     // 1. All Members Report
     case 'all-members': {
       const filter = {};
-      if (villageId) filter.villageId = villageId;
+      const rawVillages = villageIds || villageId;
+      if (rawVillages) {
+        let vList = [];
+        if (Array.isArray(rawVillages)) {
+          vList = rawVillages.filter(Boolean);
+        } else if (typeof rawVillages === 'string') {
+          vList = rawVillages.split(',').map(s => s.trim()).filter(Boolean);
+        }
+        if (vList.length === 1) {
+          filter.villageId = vList[0];
+        } else if (vList.length > 1) {
+          filter.villageId = { $in: vList };
+        }
+      }
       if (status) filter.status = status;
       const data = await Member.find(filter).populate('villageId', 'name').sort({ memberId: 1 }).lean();
       return data.map(m => ({

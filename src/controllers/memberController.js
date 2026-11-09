@@ -260,6 +260,7 @@ async function getMembers(req, res, next) {
     const {
       search,
       villageId,
+      villageIds,
       status,
       page = 1,
       limit = 50,
@@ -271,8 +272,19 @@ async function getMembers(req, res, next) {
     if (status) {
       filter.status = status;
     }
-    if (villageId) {
-      filter.villageId = villageId;
+    const rawVillages = villageIds || villageId;
+    if (rawVillages) {
+      let vList = [];
+      if (Array.isArray(rawVillages)) {
+        vList = rawVillages.filter(Boolean);
+      } else if (typeof rawVillages === 'string') {
+        vList = rawVillages.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      if (vList.length === 1) {
+        filter.villageId = vList[0];
+      } else if (vList.length > 1) {
+        filter.villageId = { $in: vList };
+      }
     }
     if (search) {
       filter.$or = [
