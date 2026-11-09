@@ -7,5 +7,6 @@ router.use(authDirector);
 
 router.get('/', chequeController.getCheques);
 router.patch('/:id/status', chequeController.updateChequeStatus);
+router.delete('/:id', chequeController.deleteCheque);
 
 module.exports = router;

@@ -301,7 +301,107 @@ async function getCheques(req, res, next) {
   }
 }
 
+// Delete Cheque Transaction (Safely reverts dues & ledgers if CLEARED)
+async function deleteCheque(req, res, next) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    const transaction = await PaymentTransaction.findById(id).session(session);
+    if (!transaction) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: 'Cheque transaction not found.' });
+    }
+
+    if (transaction.paymentMode !== 'CHEQUE') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Only cheque transactions can be deleted here.' });
+    }
+
+    const chequeNum = transaction.chequeDetails?.chequeNumber || transaction.transactionId;
+    const prevStatus = transaction.paymentStatus;
+
+    // Find all linked allocations
+    const allocations = await PaymentAllocation.find({ transactionId: transaction._id }).session(session);
+    const allocationIds = allocations.map(a => a._id);
+
+    // Find all linked applications
+    const applications = await PaymentApplication.find({ allocationId: { $in: allocationIds } }).session(session);
+
+    // If cheque was CLEARED, revert any applied dues and penalties
+    if (prevStatus === 'CLEARED') {
+      for (const app of applications) {
+        if (app.status === 'APPLIED') {
+          if (app.installmentDueId) {
+            const due = await MemberInstallmentDue.findById(app.installmentDueId).session(session);
+            if (due) {
+              due.paidAmountPaise = Math.max(0, due.paidAmountPaise - app.appliedAmountPaise);
+              due.outstandingAmountPaise = Math.min(due.originalAmountPaise, due.originalAmountPaise - due.paidAmountPaise);
+              due.status = due.paidAmountPaise === 0 ? 'PENDING' : 'PARTIAL';
+              await due.save({ session });
+            }
+          }
+
+          if (app.memberPenaltyId) {
+            const pen = await MemberPenalty.findById(app.memberPenaltyId).session(session);
+            if (pen) {
+              pen.paidAmountPaise = Math.max(0, pen.paidAmountPaise - app.appliedAmountPaise);
+              pen.outstandingAmountPaise = Math.max(0, pen.amountPaise - pen.paidAmountPaise - pen.waivedAmountPaise);
+              pen.status = pen.paidAmountPaise === 0 ? 'PENDING' : 'PARTIAL';
+              await pen.save({ session });
+            }
+          }
+        }
+      }
+    }
+
+    // Delete any ledger entries referencing this transaction
+    await LedgerEntry.deleteMany({ referenceId: transaction.transactionId }).session(session);
+
+    // Delete payment applications
+    await PaymentApplication.deleteMany({ allocationId: { $in: allocationIds } }).session(session);
+
+    // Delete payment allocations
+    await PaymentAllocation.deleteMany({ transactionId: transaction._id }).session(session);
+
+    // Delete transaction
+    await PaymentTransaction.findByIdAndDelete(transaction._id).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    await logAuditEvent({
+      req,
+      action: 'CHEQUE_DELETED',
+      entityType: 'PaymentTransaction',
+      entityId: transaction._id,
+      details: {
+        transactionId: transaction.transactionId,
+        chequeNumber: transaction.chequeDetails?.chequeNumber,
+        bankName: transaction.chequeDetails?.bankName,
+        totalAmountPaise: transaction.totalAmountPaise,
+        status: prevStatus,
+        allocationsCount: allocations.length
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Cheque #${chequeNum} (${transaction.payerName}) deleted successfully.`
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+}
+
 module.exports = {
   updateChequeStatus,
-  getCheques
+  getCheques,
+  deleteCheque
 };
