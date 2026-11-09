@@ -14,7 +14,17 @@ const { paiseToRupees, formatINR } = require('../utils/currency');
 
 // Dispatcher for report generation
 async function generateReportData(reportType, query = {}) {
-  const { villageId, villageIds, financialYearId, startDate, endDate, status, memberId } = query;
+  const {
+    villageId,
+    villageIds,
+    financialYearId,
+    startDate,
+    endDate,
+    status,
+    memberId,
+    sortBy = 'memberId',
+    sortOrder = 'asc'
+  } = query;
 
   switch (reportType) {
     // 1. All Members Report
@@ -35,7 +45,32 @@ async function generateReportData(reportType, query = {}) {
         }
       }
       if (status) filter.status = status;
-      const data = await Member.find(filter).populate('villageId', 'name').sort({ memberId: 1 }).lean();
+
+      const data = await Member.find(filter)
+        .populate('villageId', 'name')
+        .collation({ locale: 'en', strength: 2, numericOrdering: true })
+        .sort({ memberId: 1 })
+        .lean();
+
+      // Ensure exact natural numerical sequence in JavaScript (1, 2, 3 ... 100, 101 ... 1544)
+      const isDesc = String(sortOrder).toLowerCase() === 'desc';
+      data.sort((a, b) => {
+        if (sortBy === 'fullName') {
+          const comp = String(a.fullName || '').localeCompare(String(b.fullName || ''), 'gu', { sensitivity: 'base' });
+          return isDesc ? -comp : comp;
+        }
+        if (sortBy === 'joiningDate') {
+          const dateA = a.joiningDate ? new Date(a.joiningDate).getTime() : 0;
+          const dateB = b.joiningDate ? new Date(b.joiningDate).getTime() : 0;
+          return isDesc ? dateB - dateA : dateA - dateB;
+        }
+        // Default: Natural numeric sequence by memberId (1, 2, 3 ... 100, 101 ...)
+        const idA = String(a.memberId || '').trim();
+        const idB = String(b.memberId || '').trim();
+        const comp = idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
+        return isDesc ? -comp : comp;
+      });
+
       return data.map(m => ({
         'Member ID': m.memberId,
         'Full Name': m.fullName,
@@ -421,6 +456,20 @@ async function exportReportExcel(req, res, next) {
     const data = await generateReportData(type, req.query);
 
     const worksheet = xlsx.utils.json_to_sheet(data);
+
+    // Auto-fit column widths for clear, readable Excel output
+    if (Array.isArray(data) && data.length > 0) {
+      const keys = Object.keys(data[0]);
+      worksheet['!cols'] = keys.map(k => {
+        let maxLen = k.length;
+        for (let i = 0; i < Math.min(data.length, 100); i++) {
+          const val = data[i][k];
+          if (val) maxLen = Math.max(maxLen, String(val).length);
+        }
+        return { wch: Math.max(maxLen + 4, 12) };
+      });
+    }
+
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, 'Report');
 
