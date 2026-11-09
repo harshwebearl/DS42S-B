@@ -216,11 +216,112 @@ async function deleteVillage(req, res, next) {
   }
 }
 
+// Bulk Update Village Status
+async function bulkUpdateVillageStatus(req, res, next) {
+  try {
+    const { villageIds, status } = req.body;
+    if (!Array.isArray(villageIds) || villageIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please select at least one village.' });
+    }
+    if (!['ACTIVE', 'INACTIVE'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status. Must be ACTIVE or INACTIVE.' });
+    }
+
+    const result = await Village.updateMany(
+      { _id: { $in: villageIds } },
+      { $set: { status } }
+    );
+
+    await logAuditEvent({
+      req,
+      action: 'VILLAGES_BULK_STATUS_UPDATED',
+      entityType: 'Village',
+      details: { count: result.modifiedCount, status, villageIds }
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully updated ${result.modifiedCount} village(s) to ${status}.`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Bulk Delete Villages (Skips any with linked members)
+async function bulkDeleteVillages(req, res, next) {
+  try {
+    const { villageIds } = req.body;
+    if (!Array.isArray(villageIds) || villageIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please select at least one village.' });
+    }
+
+    const villages = await Village.find({ _id: { $in: villageIds } });
+    if (villages.length === 0) {
+      return res.status(404).json({ success: false, message: 'No matching villages found.' });
+    }
+
+    // Check which ones have linked members
+    const memberCounts = await Member.aggregate([
+      { $match: { villageId: { $in: villages.map(v => v._id) } } },
+      { $group: { _id: '$villageId', count: { $sum: 1 } } }
+    ]);
+    const busyVillageIds = new Set(memberCounts.map(c => String(c._id)));
+
+    const toDeleteIds = [];
+    const skippedVillages = [];
+
+    villages.forEach(v => {
+      if (busyVillageIds.has(String(v._id))) {
+        const cnt = memberCounts.find(c => String(c._id) === String(v._id))?.count || 1;
+        skippedVillages.push({ id: v._id, name: v.name, count: cnt });
+      } else {
+        toDeleteIds.push(v._id);
+      }
+    });
+
+    let deletedCount = 0;
+    if (toDeleteIds.length > 0) {
+      const delResult = await Village.deleteMany({ _id: { $in: toDeleteIds } });
+      deletedCount = delResult.deletedCount;
+
+      await logAuditEvent({
+        req,
+        action: 'VILLAGES_BULK_DELETED',
+        entityType: 'Village',
+        details: { deletedCount, deletedIds: toDeleteIds }
+      });
+    }
+
+    let message = '';
+    if (deletedCount > 0 && skippedVillages.length === 0) {
+      message = `Successfully deleted ${deletedCount} village(s).`;
+    } else if (deletedCount > 0 && skippedVillages.length > 0) {
+      message = `Deleted ${deletedCount} village(s). ${skippedVillages.length} village(s) skipped because they have active linked members.`;
+    } else {
+      message = `None of the selected villages could be deleted because all of them have linked members (${skippedVillages.map(s => `${s.name} (${s.count})`).join(', ')}).`;
+    }
+
+    res.json({
+      success: true,
+      message,
+      deletedCount,
+      skippedCount: skippedVillages.length,
+      skippedVillages
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   createVillage,
   getVillages,
   getVillageById,
   updateVillage,
   deactivateVillage,
-  deleteVillage
+  deleteVillage,
+  bulkUpdateVillageStatus,
+  bulkDeleteVillages
 };

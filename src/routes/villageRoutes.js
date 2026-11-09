@@ -5,6 +5,9 @@ const { authDirector } = require('../middleware/auth');
 
 router.use(authDirector);
 
+router.post('/bulk-status', villageController.bulkUpdateVillageStatus);
+router.post('/bulk-delete', villageController.bulkDeleteVillages);
+
 router.post('/', villageController.createVillage);
 router.get('/', villageController.getVillages);
 router.get('/:id', villageController.getVillageById);
