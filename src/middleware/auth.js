@@ -5,15 +5,21 @@ const JWT_SECRET = process.env.JWT_SECRET || 'ds24g_director_super_secret_jwt_ke
 
 async function authDirector(req, res, next) {
   try {
+    let token = null;
     const authHeader = req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.replace('Bearer ', '').trim();
+    } else if (req.query && req.query.token) {
+      token = String(req.query.token).trim();
+    }
+
+    if (!token) {
       return res.status(401).json({
         success: false,
         message: 'Access denied. No authentication token provided.'
       });
     }
 
-    const token = authHeader.replace('Bearer ', '').trim();
     const decoded = jwt.verify(token, JWT_SECRET);
 
     const director = await Director.findById(decoded.id).select('-passwordHash');
