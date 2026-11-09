@@ -26,11 +26,11 @@ const memberSchema = new mongoose.Schema({
   villageId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Village',
-    required: true
+    required: false
   },
   dob: {
     type: Date,
-    required: true
+    required: false
   },
   joiningDate: {
     type: Date,

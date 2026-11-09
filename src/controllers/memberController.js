@@ -30,14 +30,19 @@ async function createMember(req, res, next) {
       notes
     } = req.body;
 
-    if (!fullName || !villageId || !dob) {
-      return res.status(400).json({ success: false, message: 'Full Name, Village, and Date of Birth are required.' });
+    if (!fullName || !String(fullName).trim()) {
+      return res.status(400).json({ success: false, message: 'Full Name is required.' });
     }
 
-    // Verify Village
-    const village = await Village.findById(villageId);
-    if (!village) {
-      return res.status(400).json({ success: false, message: 'Invalid Village selected.' });
+    // Verify Village if provided
+    let finalVillageId = undefined;
+    let villageName = '-';
+    if (villageId && String(villageId).trim()) {
+      const village = await Village.findById(villageId);
+      if (village) {
+        finalVillageId = village._id;
+        villageName = village.name;
+      }
     }
 
     // Member ID: custom or auto-generated SDS-xxx
@@ -53,20 +58,20 @@ async function createMember(req, res, next) {
 
     const member = await Member.create({
       memberId: finalMemberId,
-      fullName: fullName.trim(),
-      mobileNumber: mobileNumber ? mobileNumber.trim() : '',
-      email: email ? email.trim().toLowerCase() : '',
-      villageId,
-      dob,
-      joiningDate: joiningDate || new Date(),
-      occupation: occupation ? occupation.trim() : '',
+      fullName: String(fullName).trim(),
+      mobileNumber: mobileNumber ? String(mobileNumber).trim() : '',
+      email: email ? String(email).trim().toLowerCase() : '',
+      villageId: finalVillageId,
+      dob: dob ? new Date(dob) : undefined,
+      joiningDate: joiningDate ? new Date(joiningDate) : new Date(),
+      occupation: occupation ? String(occupation).trim() : '',
       gender: gender || 'MALE',
       maritalStatus: maritalStatus !== undefined ? maritalStatus : true,
-      address: address ? address.trim() : '',
-      panCard: panCard ? panCard.trim().toUpperCase() : '',
-      aadhaarCard: aadhaarCard ? aadhaarCard.trim() : '',
+      address: address ? String(address).trim() : '',
+      panCard: panCard ? String(panCard).trim().toUpperCase() : '',
+      aadhaarCard: aadhaarCard ? String(aadhaarCard).trim() : '',
       status: 'ACTIVE',
-      notes: notes ? notes.trim() : ''
+      notes: notes ? String(notes).trim() : ''
     });
 
     await logAuditEvent({
@@ -74,7 +79,7 @@ async function createMember(req, res, next) {
       action: 'MEMBER_CREATED',
       entityType: 'Member',
       entityId: member._id,
-      details: { memberId: member.memberId, fullName: member.fullName, village: village.name }
+      details: { memberId: member.memberId, fullName: member.fullName, village: villageName }
     });
 
     res.status(201).json({ success: true, message: 'Member registered successfully', member });
@@ -396,27 +401,31 @@ async function updateMember(req, res, next) {
       return res.status(404).json({ success: false, message: 'Member not found.' });
     }
 
-    if (villageId) {
-      const village = await Village.findById(villageId);
-      if (!village) {
-        return res.status(400).json({ success: false, message: 'Invalid Village.' });
+    if (villageId !== undefined) {
+      if (villageId && String(villageId).trim()) {
+        const village = await Village.findById(villageId);
+        if (!village) {
+          return res.status(400).json({ success: false, message: 'Invalid Village.' });
+        }
+        member.villageId = villageId;
+      } else {
+        member.villageId = undefined;
       }
-      member.villageId = villageId;
     }
 
     if (fullName) member.fullName = fullName.trim();
-    if (mobileNumber !== undefined) member.mobileNumber = mobileNumber.trim();
-    if (email !== undefined) member.email = email.trim().toLowerCase();
-    if (dob) member.dob = dob;
-    if (joiningDate) member.joiningDate = joiningDate;
-    if (occupation !== undefined) member.occupation = occupation.trim();
+    if (mobileNumber !== undefined) member.mobileNumber = mobileNumber ? mobileNumber.trim() : '';
+    if (email !== undefined) member.email = email ? email.trim().toLowerCase() : '';
+    if (dob !== undefined) member.dob = dob ? new Date(dob) : undefined;
+    if (joiningDate) member.joiningDate = new Date(joiningDate);
+    if (occupation !== undefined) member.occupation = occupation ? occupation.trim() : '';
     if (gender) member.gender = gender;
     if (maritalStatus !== undefined) member.maritalStatus = maritalStatus;
-    if (address !== undefined) member.address = address.trim();
+    if (address !== undefined) member.address = address ? address.trim() : '';
     if (panCard !== undefined) member.panCard = panCard ? panCard.trim().toUpperCase() : '';
     if (aadhaarCard !== undefined) member.aadhaarCard = aadhaarCard ? aadhaarCard.trim() : '';
     if (status) member.status = status;
-    if (notes !== undefined) member.notes = notes.trim();
+    if (notes !== undefined) member.notes = notes ? notes.trim() : '';
 
     await member.save();
 
