@@ -73,7 +73,10 @@ async function reallocateBulkPayment(req, res, next) {
     }
 
     // Existing allocations
-    const oldAllocations = await PaymentAllocation.find({ transactionId: transaction._id }).session(session);
+    const oldAllocations = await PaymentAllocation.find({
+      transactionId: transaction._id,
+      isCurrent: { $ne: false }
+    }).session(session);
     const oldMemberMap = {};
     oldAllocations.forEach(a => {
       oldMemberMap[String(a.memberId)] = {

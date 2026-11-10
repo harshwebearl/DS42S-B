@@ -43,7 +43,7 @@ async function getMemberLedger(req, res, next) {
     });
 
     // Also get all payment allocations for complete payment history
-    const allocations = await PaymentAllocation.find({ memberId: member._id })
+    const allocations = await PaymentAllocation.find({ memberId: member._id, isCurrent: { $ne: false } })
       .populate({
         path: 'transactionId',
         select: 'transactionId isBulk payerName paymentDate paymentMode chequeDetails referenceNumber paymentStatus'

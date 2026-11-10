@@ -228,7 +228,10 @@ async function generateReportData(reportType, query = {}) {
         'Payment Mode': t.paymentMode,
         'Amount (₹)': paiseToRupees(t.totalAmountPaise),
         'Status': t.paymentStatus,
-        'Cheque No': t.chequeDetails?.chequeNumber || '-'
+        'Cheque No': t.chequeDetails?.chequeNumber || '-',
+        'Bank Name': t.chequeDetails?.bankName || '-',
+        'Bank Account Number': t.chequeDetails?.bankAccountNumber || '-',
+        'Reference Number': t.referenceNumber || '-'
       }));
     }
 
@@ -240,7 +243,7 @@ async function generateReportData(reportType, query = {}) {
 
       const rows = [];
       for (const t of txns) {
-        const count = await PaymentAllocation.countDocuments({ transactionId: t._id });
+        const count = await PaymentAllocation.countDocuments({ transactionId: t._id, isCurrent: { $ne: false } });
         rows.push({
           'Bulk Transaction ID': t.transactionId,
           'Payer Name': t.payerName,
@@ -251,6 +254,8 @@ async function generateReportData(reportType, query = {}) {
           'Allocated Members Count': count,
           'Cheque Number': t.chequeDetails?.chequeNumber || '-',
           'Bank Name': t.chequeDetails?.bankName || '-',
+          'Bank Account Number': t.chequeDetails?.bankAccountNumber || '-',
+          'Reference Number': t.referenceNumber || '-',
           'Status': t.paymentStatus
         });
       }
@@ -269,6 +274,7 @@ async function generateReportData(reportType, query = {}) {
         'Payer Name': c.payerName,
         'Cheque Number': c.chequeDetails?.chequeNumber || '',
         'Bank Name': c.chequeDetails?.bankName || '',
+        'Bank Account Number': c.chequeDetails?.bankAccountNumber || '',
         'Amount (₹)': paiseToRupees(c.totalAmountPaise),
         'Cheque Date': c.chequeDetails?.chequeDate ? new Date(c.chequeDetails.chequeDate).toLocaleDateString() : '-',
         'Deposit Date': c.chequeDetails?.depositDate ? new Date(c.chequeDetails.depositDate).toLocaleDateString() : '-',
@@ -289,6 +295,7 @@ async function generateReportData(reportType, query = {}) {
         'Payer Name': b.payerName,
         'Cheque Number': b.chequeDetails?.chequeNumber || '',
         'Bank Name': b.chequeDetails?.bankName || '',
+        'Bank Account Number': b.chequeDetails?.bankAccountNumber || '',
         'Amount (₹)': paiseToRupees(b.totalAmountPaise),
         'Bounce Date': b.chequeDetails?.bounceDate ? new Date(b.chequeDetails.bounceDate).toLocaleDateString() : '-',
         'Bounce Reason': b.chequeDetails?.bounceReason || 'Insufficient Funds'
@@ -353,6 +360,7 @@ async function generateReportData(reportType, query = {}) {
         'Beneficiary Name': c.beneficiaryName,
         'Cheque Number': c.chequeNumber,
         'Bank Name': c.bankName,
+        'Bank Account Number': c.bankAccountNumber || '',
         'Cheque Amount (₹)': paiseToRupees(c.chequeAmountPaise),
         'Issue Date': new Date(c.issueDate).toLocaleDateString(),
         'Handover Date': c.handoverDate ? new Date(c.handoverDate).toLocaleDateString() : '-',
@@ -453,6 +461,90 @@ async function getReport(req, res, next) {
 async function exportReportExcel(req, res, next) {
   try {
     const { type } = req.params;
+    if (type === 'ca-payment-export') {
+      const [singlePayments, bulkPayments] = await Promise.all([
+        generateReportData('single-payments', req.query),
+        generateReportData('bulk-payments', req.query)
+      ]);
+      const paymentRows = [
+        ...singlePayments.map((row) => ({
+          recordType: 'Single',
+          transactionId: row['Transaction ID'],
+          memberId: row['Member ID'],
+          memberName: row['Member Name'],
+          village: row.Village,
+          payerName: row['Payer Name'],
+          payerMobile: '-',
+          paymentDate: row['Payment Date'],
+          paymentMode: row['Payment Mode'],
+          amount: row['Amount (₹)'],
+          chequeNumber: row['Cheque No'],
+          bankName: row['Bank Name'],
+          bankAccountNumber: row['Bank Account Number'],
+          referenceNumber: row['Reference Number'],
+          status: row.Status,
+          allocatedMembers: 1
+        })),
+        ...bulkPayments.map((row) => ({
+          recordType: 'Bulk',
+          transactionId: row['Bulk Transaction ID'],
+          memberId: '-',
+          memberName: '-',
+          village: '-',
+          payerName: row['Payer Name'],
+          payerMobile: row['Payer Mobile'],
+          paymentDate: row['Payment Date'],
+          paymentMode: row['Payment Mode'],
+          amount: row['Total Cheque/Receipt Amount (₹)'],
+          chequeNumber: row['Cheque Number'],
+          bankName: row['Bank Name'],
+          bankAccountNumber: row['Bank Account Number'],
+          referenceNumber: row['Reference Number'],
+          status: row.Status,
+          allocatedMembers: row['Allocated Members Count']
+        }))
+      ];
+      const headers = [
+        'Record Type', 'Transaction ID', 'Member ID', 'Member Name', 'Village',
+        'Payer Name', 'Payer Mobile', 'Payment Date', 'Payment Mode', 'Amount (₹)',
+        'Cheque Number', 'Bank Name', 'Bank Account Number', 'Reference Number',
+        'Status', 'Allocated Members'
+      ];
+      const workbook = xlsx.utils.book_new();
+      const appendPaymentSheet = (name, modes) => {
+        const rows = paymentRows
+          .filter((row) => modes.includes(row.paymentMode))
+          .map((row) => ({
+            'Record Type': row.recordType,
+            'Transaction ID': row.transactionId,
+            'Member ID': row.memberId,
+            'Member Name': row.memberName,
+            'Village': row.village,
+            'Payer Name': row.payerName,
+            'Payer Mobile': row.payerMobile,
+            'Payment Date': row.paymentDate,
+            'Payment Mode': row.paymentMode,
+            'Amount (₹)': row.amount,
+            'Cheque Number': row.chequeNumber,
+            'Bank Name': row.bankName,
+            'Bank Account Number': row.bankAccountNumber,
+            'Reference Number': row.referenceNumber,
+            'Status': row.status,
+            'Allocated Members': row.allocatedMembers
+          }));
+        const worksheet = xlsx.utils.json_to_sheet(rows, { header: headers });
+        worksheet['!cols'] = headers.map((header) => ({ wch: Math.max(header.length + 3, 16) }));
+        xlsx.utils.book_append_sheet(workbook, worksheet, name);
+      };
+
+      appendPaymentSheet('Cheque', ['CHEQUE']);
+      appendPaymentSheet('Online', ['UPI', 'BANK_TRANSFER']);
+      const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Disposition', `attachment; filename="DS24G_CA_Payments_${Date.now()}.xlsx"`);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      return res.send(buffer);
+    }
+
     const data = await generateReportData(type, req.query);
 
     const worksheet = xlsx.utils.json_to_sheet(data);

@@ -395,7 +395,7 @@ async function getMemberDues(req, res, next) {
     const latePenaltyMaster = await PenaltyMaster.findOne({
       applicableRule: 'AFTER_DUE_DATE',
       status: 'ACTIVE'
-    }) || await PenaltyMaster.findOne({ status: 'ACTIVE' });
+    });
 
     const formatted = dues.map(d => {
       const isPaid = d.status === 'PAID' || d.outstandingAmountPaise === 0;

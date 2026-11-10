@@ -1,4 +1,5 @@
 const axios = require('axios');
+const xlsx = require('xlsx');
 const { startServer } = require('../server');
 
 const BASE_URL = 'http://localhost:5000/api';
@@ -182,6 +183,25 @@ async function runTests() {
       remarks: 'Payment for Installment 4'
     }, { headers });
     console.log(`✓ Cash payment received: Receipt #${singlePayRes.data.receipt.transactionId} for ${singlePayRes.data.receipt.totalAmountINR}`);
+    const singleTxn = (await axios.get(`${BASE_URL}/payments?search=${singlePayRes.data.receipt.transactionId}`, { headers })).data.transactions[0];
+    const singleDetails = (await axios.get(`${BASE_URL}/payments/${singleTxn._id}`, { headers })).data;
+    const singleEditRes = await axios.put(`${BASE_URL}/payments/${singleTxn._id}`, {
+      payerName: singleDetails.transaction.payerName,
+      payerMobile: singleDetails.transaction.payerMobile,
+      paymentDate: new Date(singleDetails.transaction.paymentDate).toISOString().slice(0, 10),
+      paymentMode: singleDetails.transaction.paymentMode,
+      totalAmountRupees: singleDetails.transaction.totalAmountRupees,
+      referenceNumber: singleDetails.transaction.referenceNumber,
+      remarks: singleDetails.transaction.remarks,
+      allocations: singleDetails.allocations.map(allocation => ({
+        memberId: allocation.memberId,
+        amountRupees: allocation.amountRupees
+      }))
+    }, { headers });
+    if (singleEditRes.data.transaction.paymentStatus !== 'CLEARED') {
+      throw new Error('Editing a cleared single payment must preserve its cleared status.');
+    }
+    console.log('✓ Cleared single payment edit preserved status and re-applied its member ledger.');
 
     // -------------------------------------------------------------
     // MODULE 9: BULK / GROUP PAYMENT ALLOCATION (CRITICAL)
@@ -200,6 +220,7 @@ async function runTests() {
         chequeDetails: {
           chequeNumber: 'CHQ-991122',
           bankName: 'State Bank of India',
+          bankAccountNumber: '1234567890',
           chequeDate: '2026-03-01'
         },
         allocations: [
@@ -224,6 +245,7 @@ async function runTests() {
       chequeDetails: {
         chequeNumber: 'CHQ-882233',
         bankName: 'HDFC Bank, Mahuva Branch',
+        bankAccountNumber: '9876543210',
         chequeDate: '2026-03-05'
       },
       remarks: 'Family Group Installment 1 Cheque',
@@ -247,6 +269,25 @@ async function runTests() {
     }
     console.log('✓ Verified: Exactly 1 Master Transaction with 5 relational PaymentAllocation records in MongoDB.');
 
+    const pendingEditRes = await axios.put(`${BASE_URL}/payments/${txnDetails.data.transaction._id}`, {
+      payerName: txnDetails.data.transaction.payerName,
+      payerMobile: txnDetails.data.transaction.payerMobile,
+      paymentDate: new Date(txnDetails.data.transaction.paymentDate).toISOString().slice(0, 10),
+      paymentMode: txnDetails.data.transaction.paymentMode,
+      totalAmountRupees: txnDetails.data.transaction.totalAmountRupees,
+      chequeDetails: txnDetails.data.transaction.chequeDetails,
+      referenceNumber: txnDetails.data.transaction.referenceNumber,
+      remarks: txnDetails.data.transaction.remarks,
+      allocations: txnDetails.data.allocations.map(allocation => ({
+        memberId: allocation.memberId,
+        amountRupees: allocation.amountRupees
+      }))
+    }, { headers });
+    if (pendingEditRes.data.transaction.paymentStatus !== 'RECEIVED') {
+      throw new Error('Editing a pending cheque must preserve its received status.');
+    }
+    console.log('✓ Pending cheque edit preserved the received status.');
+
     // -------------------------------------------------------------
     // MODULE 10: CHEQUE CLEARANCE MANAGEMENT
     // -------------------------------------------------------------
@@ -268,6 +309,26 @@ async function runTests() {
     }, { headers });
     console.log('✓ Cheque marked CLEARED. All 5 member allocations confirmed and member ledgers credited.');
 
+    const clearedDetails = await axios.get(`${BASE_URL}/payments/${bulkTxnId}`, { headers });
+    const clearedEditRes = await axios.put(`${BASE_URL}/payments/${bulkTxnId}`, {
+      payerName: clearedDetails.data.transaction.payerName,
+      payerMobile: clearedDetails.data.transaction.payerMobile,
+      paymentDate: new Date(clearedDetails.data.transaction.paymentDate).toISOString().slice(0, 10),
+      paymentMode: clearedDetails.data.transaction.paymentMode,
+      totalAmountRupees: clearedDetails.data.transaction.totalAmountRupees,
+      chequeDetails: clearedDetails.data.transaction.chequeDetails,
+      referenceNumber: clearedDetails.data.transaction.referenceNumber,
+      remarks: clearedDetails.data.transaction.remarks,
+      allocations: clearedDetails.data.allocations.map((allocation, index) => ({
+        memberId: allocation.memberId,
+        amountRupees: index === 0 ? 1200 : index === 1 ? 800 : allocation.amountRupees
+      }))
+    }, { headers });
+    if (clearedEditRes.data.transaction.paymentStatus !== 'CLEARED') {
+      throw new Error('Editing a cleared payment must preserve its cleared status.');
+    }
+    console.log('✓ Cleared bulk payment edit preserved status and completed ledger re-application.');
+
     // -------------------------------------------------------------
     // MODULE 11: CHEQUE BOUNCE LIFECYCLE
     // -------------------------------------------------------------
@@ -279,7 +340,8 @@ async function runTests() {
       amountRupees: 1000,
       chequeDetails: {
         chequeNumber: 'CHQ-BOUNCE-01',
-        bankName: 'ICICI Bank'
+        bankName: 'ICICI Bank',
+        bankAccountNumber: '1122334455'
       }
     }, { headers });
 
@@ -365,6 +427,7 @@ async function runTests() {
         claimId: unpaidClaim._id,
         beneficiaryName: 'Sarojben K. Parekh',
         bankName: 'SBI',
+        bankAccountNumber: '2233445566',
         chequeNumber: 'CHQ-INVALID'
       }, { headers });
       throw new Error('Cheque issue on unapproved claim must fail!');
@@ -414,6 +477,7 @@ async function runTests() {
       claimId: cleanClaim._id,
       beneficiaryName: 'Nirmalaben P. Doshi',
       bankName: 'Bank of Baroda',
+      bankAccountNumber: '3344556677',
       chequeNumber: 'CLM-CHQ-1001',
       chequeAmountRupees: 100000
     }, { headers });
@@ -426,6 +490,7 @@ async function runTests() {
         claimId: cleanClaim._id,
         beneficiaryName: 'Nirmalaben P. Doshi',
         bankName: 'Bank of Baroda',
+        bankAccountNumber: '3344556677',
         chequeNumber: 'CLM-CHQ-1002'
       }, { headers });
       throw new Error('Duplicate claim cheque must fail!');
@@ -487,6 +552,16 @@ async function runTests() {
       throw new Error('Excel report export failed!');
     }
     console.log(`✓ Excel report export verified (${excelRes.data.byteLength} bytes downloaded).`);
+
+    const caExcelRes = await axios.get(`${BASE_URL}/reports/ca-payment-export/export-excel`, {
+      headers,
+      responseType: 'arraybuffer'
+    });
+    const caWorkbook = xlsx.read(Buffer.from(caExcelRes.data), { type: 'buffer' });
+    if (caWorkbook.SheetNames.join(',') !== 'Cheque,Online') {
+      throw new Error('CA payment export must contain separate Cheque and Online sheets.');
+    }
+    console.log('✓ CA payment workbook contains separate Cheque and Online sheets.');
 
     console.log('\n===============================================================');
     console.log('ALL 21 CRM MODULES & WORKFLOWS SUCCESSFULLY VERIFIED!');

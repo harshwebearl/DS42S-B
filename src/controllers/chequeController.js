@@ -75,7 +75,7 @@ async function updateChequeStatus(req, res, next) {
       await transaction.save({ session });
 
       // Find all linked allocations
-      const allocations = await PaymentAllocation.find({ transactionId: transaction._id }).session(session);
+      const allocations = await PaymentAllocation.find({ transactionId: transaction._id, isCurrent: { $ne: false } }).session(session);
 
       for (const alloc of allocations) {
         alloc.status = 'CONFIRMED';
@@ -146,7 +146,7 @@ async function updateChequeStatus(req, res, next) {
       await transaction.save({ session });
 
       // Find allocations
-      const allocations = await PaymentAllocation.find({ transactionId: transaction._id }).session(session);
+      const allocations = await PaymentAllocation.find({ transactionId: transaction._id, isCurrent: { $ne: false } }).session(session);
 
       for (const alloc of allocations) {
         alloc.status = 'REVERTED';
@@ -271,7 +271,7 @@ async function getCheques(req, res, next) {
 
     // Attach allocation counts and members
     const chequeIds = cheques.map(c => c._id);
-    const allocations = await PaymentAllocation.find({ transactionId: { $in: chequeIds } })
+    const allocations = await PaymentAllocation.find({ transactionId: { $in: chequeIds }, isCurrent: { $ne: false } })
       .populate('memberId', 'memberId fullName')
       .lean();
 
@@ -326,7 +326,7 @@ async function deleteCheque(req, res, next) {
     const prevStatus = transaction.paymentStatus;
 
     // Find all linked allocations
-    const allocations = await PaymentAllocation.find({ transactionId: transaction._id }).session(session);
+    const allocations = await PaymentAllocation.find({ transactionId: transaction._id, isCurrent: { $ne: false } }).session(session);
     const allocationIds = allocations.map(a => a._id);
 
     // Find all linked applications

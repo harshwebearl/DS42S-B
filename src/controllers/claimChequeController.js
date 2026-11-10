@@ -12,16 +12,17 @@ async function issueClaimCheque(req, res, next) {
       claimId,
       beneficiaryName,
       bankName,
+      bankAccountNumber,
       chequeNumber,
       chequeAmountRupees,
       issueDate,
       remarks
     } = req.body;
 
-    if (!claimId || !beneficiaryName || !bankName || !chequeNumber) {
+    if (!claimId || !beneficiaryName || !bankName || !bankAccountNumber || !chequeNumber) {
       return res.status(400).json({
         success: false,
-        message: 'Claim ID, Beneficiary Name, Bank Name, and Cheque Number are required.'
+        message: 'Claim ID, Beneficiary Name, Bank Name, Bank Account Number, and Cheque Number are required.'
       });
     }
 
@@ -68,6 +69,7 @@ async function issueClaimCheque(req, res, next) {
       beneficiaryName: beneficiaryName.trim(),
       chequeAmountPaise,
       bankName: bankName.trim(),
+      bankAccountNumber: bankAccountNumber.trim(),
       chequeNumber: chequeNumber.trim(),
       issueDate: issueDate ? new Date(issueDate) : new Date(),
       chequeStatus: 'ISSUED',

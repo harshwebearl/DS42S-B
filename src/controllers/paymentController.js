@@ -5,6 +5,7 @@ const PaymentApplication = require('../models/PaymentApplication');
 const MemberInstallmentDue = require('../models/MemberInstallmentDue');
 const MemberPenalty = require('../models/MemberPenalty');
 const Member = require('../models/Member');
+const AuditLog = require('../models/AuditLog');
 const PenaltyMaster = require('../models/PenaltyMaster');
 const LedgerEntry = require('../models/LedgerEntry');
 const { rupeesToPaise, paiseToRupees, formatINR } = require('../utils/currency');
@@ -15,6 +16,7 @@ const { logAuditEvent } = require('../middleware/audit');
 async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, isConfirmed, session, selectedDueIds, waivePenalty = false, waivedDueIds = [] }) {
   let remainingPaise = amountToApplyPaise;
   const applications = [];
+  const waivedPenalties = [];
 
   const dueQuery = {
     memberId,
@@ -30,7 +32,7 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
   const latePenaltyMaster = await PenaltyMaster.findOne({
     applicableRule: 'AFTER_DUE_DATE',
     status: 'ACTIVE'
-  }).session(session) || await PenaltyMaster.findOne({ status: 'ACTIVE' }).session(session);
+  }).session(session);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -133,10 +135,12 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
       }).session(session);
 
       if (existingPen) {
+        const amountPaise = existingPen.outstandingAmountPaise;
         existingPen.waivedAmountPaise += existingPen.outstandingAmountPaise;
         existingPen.outstandingAmountPaise = 0;
         existingPen.status = 'WAIVED';
         await existingPen.save({ session });
+        waivedPenalties.push({ penaltyId: existingPen._id, amountPaise });
       }
     }
   }
@@ -178,7 +182,7 @@ async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, 
     }
   }
 
-  return { remainingPaise, applications };
+  return { remainingPaise, applications, waivedPenalties };
 }
 
 // 1. Single Member Payment Collection
@@ -227,10 +231,10 @@ async function createSinglePayment(req, res, next) {
     const isConfirmed = !isCheque; // Cash, UPI, and Bank Transfer clear immediately
 
     if (isCheque) {
-      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName) {
+      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName || !chequeDetails.bankAccountNumber?.trim()) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ success: false, message: 'Cheque Number and Bank Name are required for cheque payments.' });
+        return res.status(400).json({ success: false, message: 'Cheque Number, Bank Name, and Bank Account Number are required for cheque payments.' });
       }
     }
 
@@ -249,6 +253,7 @@ async function createSinglePayment(req, res, next) {
       chequeDetails: isCheque ? {
         chequeNumber: chequeDetails.chequeNumber.trim(),
         bankName: chequeDetails.bankName.trim(),
+        bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
         chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : new Date()
       } : undefined,
       referenceNumber: referenceNumber ? referenceNumber.trim() : '',
@@ -265,11 +270,14 @@ async function createSinglePayment(req, res, next) {
       memberId: member._id,
       allocatedAmountPaise: amountPaise,
       status: isConfirmed ? 'CONFIRMED' : 'PROVISIONAL',
+      selectedDueIds: Array.isArray(selectedDueIds) ? selectedDueIds : [],
+      waivedDueIds: Array.isArray(waivedDueIds) ? waivedDueIds : [],
+      waivePenalty: Boolean(waivePenalty),
       notes: `Single payment via ${paymentMode}`
     }], { session }))[0];
 
     // Apply payment to dues
-    await applyPaymentToDues({
+    const applicationResult = await applyPaymentToDues({
       memberId: member._id,
       allocationId: allocation._id,
       amountToApplyPaise: amountPaise,
@@ -279,6 +287,8 @@ async function createSinglePayment(req, res, next) {
       waivePenalty: Boolean(waivePenalty),
       waivedDueIds
     });
+    allocation.waivedPenalties = applicationResult.waivedPenalties;
+    await allocation.save({ session });
 
     // If confirmed immediately (cash/UPI/bank transfer), write Ledger Entry (Credit)
     if (isConfirmed) {
@@ -386,10 +396,10 @@ async function createBulkPayment(req, res, next) {
     const isConfirmed = !isCheque;
 
     if (isCheque) {
-      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName) {
+      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName || !chequeDetails.bankAccountNumber?.trim()) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ success: false, message: 'Cheque Number and Bank Name are required for bulk cheque payment.' });
+        return res.status(400).json({ success: false, message: 'Cheque Number, Bank Name, and Bank Account Number are required for bulk cheque payment.' });
       }
     }
 
@@ -465,6 +475,7 @@ async function createBulkPayment(req, res, next) {
       chequeDetails: isCheque ? {
         chequeNumber: chequeDetails.chequeNumber.trim(),
         bankName: chequeDetails.bankName.trim(),
+        bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
         chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : new Date()
       } : undefined,
       referenceNumber: referenceNumber ? referenceNumber.trim() : '',
@@ -487,11 +498,14 @@ async function createBulkPayment(req, res, next) {
         memberId: mem._id,
         allocatedAmountPaise: allocPaise,
         status: isConfirmed ? 'CONFIRMED' : 'PROVISIONAL',
+        selectedDueIds: item.selectedDueIds || (item.selectedDueId ? [item.selectedDueId] : []),
+        waivedDueIds: item.waivedDueIds || (item.waivePenalty && item.selectedDueId ? [item.selectedDueId] : []),
+        waivePenalty: Boolean(item.waivePenalty),
         notes: item.notes || `Bulk allocation from ${payerName}`
       }], { session }))[0];
 
       // Apply allocation to dues
-      await applyPaymentToDues({
+      const applicationResult = await applyPaymentToDues({
         memberId: mem._id,
         allocationId: allocation._id,
         amountToApplyPaise: allocPaise,
@@ -501,6 +515,8 @@ async function createBulkPayment(req, res, next) {
         waivePenalty: Boolean(item.waivePenalty),
         waivedDueIds: item.waivedDueIds || (item.waivePenalty && item.selectedDueId ? [item.selectedDueId] : [])
       });
+      allocation.waivedPenalties = applicationResult.waivedPenalties;
+      await allocation.save({ session });
 
       // If cleared immediately (cash/UPI/transfer), create member ledger entry
       if (isConfirmed) {
@@ -577,6 +593,370 @@ async function createBulkPayment(req, res, next) {
   }
 }
 
+async function recalculateMemberLedger(memberId, session) {
+  const entries = await LedgerEntry.find({ memberId })
+    .sort({ transactionDate: 1, createdAt: 1, _id: 1 })
+    .session(session);
+  let runningBalancePaise = 0;
+
+  for (const entry of entries) {
+    runningBalancePaise += (entry.debitPaise || 0) - (entry.creditPaise || 0);
+    if (entry.runningBalancePaise !== runningBalancePaise) {
+      entry.runningBalancePaise = runningBalancePaise;
+      await entry.save({ session });
+    }
+  }
+}
+
+async function editPayment(req, res, next) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const {
+      payerName,
+      payerMobile,
+      paymentDate,
+      paymentMode,
+      totalAmountRupees,
+      amountRupees,
+      chequeDetails,
+      referenceNumber,
+      remarks,
+      allocations
+    } = req.body;
+    const transaction = await PaymentTransaction.findById(id).session(session);
+
+    if (!transaction) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: 'Payment transaction not found.' });
+    }
+
+    const mode = paymentMode || transaction.paymentMode;
+    const allowedModes = ['CASH', 'UPI', 'BANK_TRANSFER', 'CHEQUE'];
+    const editedAllocations = allocations;
+    const totalRupees = totalAmountRupees !== undefined ? totalAmountRupees : amountRupees;
+    const totalPaise = rupeesToPaise(totalRupees);
+    const effectiveDate = paymentDate ? new Date(paymentDate) : transaction.paymentDate;
+
+    if (!payerName?.trim() || !allowedModes.includes(mode) || !Array.isArray(editedAllocations) || editedAllocations.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Payer name, valid payment mode, and at least one member allocation are required.' });
+    }
+    if (Number.isNaN(effectiveDate.getTime()) || totalPaise <= 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'A valid payment date and amount greater than zero are required.' });
+    }
+    if (!transaction.isBulk && editedAllocations.length !== 1) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'A single-member payment must have exactly one member allocation.' });
+    }
+    if (mode === 'CHEQUE' && (!chequeDetails?.chequeNumber?.trim() || !chequeDetails?.bankName?.trim() || !chequeDetails?.bankAccountNumber?.trim())) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Cheque number, bank name, and bank account number are required for cheque payments.' });
+    }
+
+    const priorReallocation = await AuditLog.findOne({
+      action: 'BULK_PAYMENT_REALLOCATED',
+      entityType: 'PaymentTransaction',
+      entityId: String(transaction._id)
+    }).session(session);
+    if (priorReallocation) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(409).json({
+        success: false,
+        message: 'This payment has already been reallocated. Editing it is blocked to protect the reallocation history and member balances.'
+      });
+    }
+
+    const idsSeen = new Set();
+    let allocationTotalPaise = 0;
+    for (let index = 0; index < editedAllocations.length; index += 1) {
+      const item = editedAllocations[index];
+      if (!item.memberId || !mongoose.Types.ObjectId.isValid(item.memberId)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: `Allocation row #${index + 1} has an invalid member.` });
+      }
+      if (idsSeen.has(String(item.memberId))) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: 'Each member can only appear once in the allocations.' });
+      }
+      idsSeen.add(String(item.memberId));
+      const itemPaise = rupeesToPaise(item.amountRupees);
+      if (itemPaise <= 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: `Allocation row #${index + 1} must be greater than zero.` });
+      }
+      allocationTotalPaise += itemPaise;
+    }
+    if (allocationTotalPaise !== totalPaise) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'The total payment amount must exactly equal the sum of member allocations.' });
+    }
+
+    const members = await Member.find({ _id: { $in: Array.from(idsSeen) } })
+      .populate('villageId')
+      .session(session);
+    if (members.length !== idsSeen.size) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'One or more selected members could not be found.' });
+    }
+    const memberMap = new Map(members.map((member) => [String(member._id), member]));
+
+    const oldAllocations = await PaymentAllocation.find({
+      transactionId: transaction._id,
+      isCurrent: { $ne: false }
+    }).session(session);
+    const oldMemberIds = oldAllocations.map((allocation) => String(allocation.memberId));
+    const previousSnapshot = {
+      payerName: transaction.payerName,
+      payerMobile: transaction.payerMobile,
+      paymentDate: transaction.paymentDate,
+      paymentMode: transaction.paymentMode,
+      totalAmountPaise: transaction.totalAmountPaise,
+      paymentStatus: transaction.paymentStatus,
+      chequeDetails: transaction.chequeDetails?.toObject?.() || transaction.chequeDetails,
+      referenceNumber: transaction.referenceNumber,
+      remarks: transaction.remarks,
+      allocations: oldAllocations.map((allocation) => ({
+        memberId: String(allocation.memberId),
+        allocatedAmountPaise: allocation.allocatedAmountPaise,
+        selectedDueIds: allocation.selectedDueIds.map(String),
+        waivedDueIds: allocation.waivedDueIds.map(String),
+        waivedPenalties: allocation.waivedPenalties,
+        waivePenalty: allocation.waivePenalty
+      }))
+    };
+
+    const applications = await PaymentApplication.find({
+      allocationId: { $in: oldAllocations.map((allocation) => allocation._id) }
+    }).session(session);
+    const affectedMemberIds = new Set([...oldMemberIds, ...Array.from(idsSeen)]);
+
+    if (transaction.paymentStatus === 'CLEARED') {
+      for (const allocation of oldAllocations) {
+        const allocationApplications = applications.filter(
+          (application) => String(application.allocationId) === String(allocation._id)
+        );
+        for (const application of allocationApplications) {
+          if (application.status === 'APPLIED' && application.installmentDueId) {
+            const due = await MemberInstallmentDue.findById(application.installmentDueId).session(session);
+            if (due) {
+              due.paidAmountPaise = Math.max(0, due.paidAmountPaise - application.appliedAmountPaise);
+              due.outstandingAmountPaise = Math.max(0, due.originalAmountPaise - due.paidAmountPaise);
+              due.status = due.outstandingAmountPaise === 0
+                ? 'PAID'
+                : due.paidAmountPaise > 0
+                  ? 'PARTIAL'
+                  : (new Date(due.dueDate) < new Date() ? 'OVERDUE' : 'PENDING');
+              await due.save({ session });
+            }
+          }
+          if (application.status === 'APPLIED' && application.memberPenaltyId) {
+            const penalty = await MemberPenalty.findById(application.memberPenaltyId).session(session);
+            if (penalty) {
+              penalty.paidAmountPaise = Math.max(0, penalty.paidAmountPaise - application.appliedAmountPaise);
+              penalty.outstandingAmountPaise = Math.max(0, penalty.amountPaise - penalty.paidAmountPaise - penalty.waivedAmountPaise);
+              penalty.status = penalty.outstandingAmountPaise === 0
+                ? (penalty.waivedAmountPaise > 0 ? 'WAIVED' : 'PAID')
+                : penalty.paidAmountPaise > 0 ? 'PARTIAL' : 'PENDING';
+              await penalty.save({ session });
+            }
+          }
+          if (application.status === 'APPLIED') {
+            application.status = 'REVERTED';
+            await application.save({ session });
+          }
+        }
+
+        const ledgerId = await generateSequentialId(LedgerEntry, 'ledgerId', 'LED', 5);
+        await LedgerEntry.create([{
+          ledgerId,
+          memberId: allocation.memberId,
+          transactionDate: transaction.paymentDate,
+          entryType: 'REALLOCATION_ADJUSTMENT',
+          referenceId: transaction.transactionId,
+          description: `Payment edit reversal for ${transaction.transactionId}`,
+          debitPaise: allocation.allocatedAmountPaise,
+          creditPaise: 0,
+          runningBalancePaise: 0,
+          status: 'POSTED'
+        }], { session });
+      }
+    }
+
+    for (const allocation of oldAllocations) {
+      for (const waivedPenalty of allocation.waivedPenalties || []) {
+        const penalty = await MemberPenalty.findById(waivedPenalty.penaltyId).session(session);
+        if (penalty) {
+          penalty.waivedAmountPaise = Math.max(0, penalty.waivedAmountPaise - waivedPenalty.amountPaise);
+          penalty.outstandingAmountPaise = Math.max(
+            0,
+            penalty.amountPaise - penalty.paidAmountPaise - penalty.waivedAmountPaise
+          );
+          penalty.status = penalty.outstandingAmountPaise === 0
+            ? (penalty.waivedAmountPaise > 0 ? 'WAIVED' : 'PAID')
+            : penalty.paidAmountPaise > 0 ? 'PARTIAL' : 'PENDING';
+          await penalty.save({ session });
+        }
+      }
+    }
+
+    for (const application of applications) {
+      if (application.status !== 'REVERTED') {
+        application.status = 'REVERTED';
+        await application.save({ session });
+      }
+    }
+    for (const allocation of oldAllocations) {
+      allocation.isCurrent = false;
+      allocation.status = 'CANCELLED';
+      await allocation.save({ session });
+    }
+
+    const nextStatus = ['BOUNCED', 'CANCELLED'].includes(transaction.paymentStatus)
+      ? transaction.paymentStatus
+      : mode === 'CHEQUE' && ['RECEIVED', 'DEPOSITED'].includes(transaction.paymentStatus)
+        ? transaction.paymentStatus
+        : 'CLEARED';
+    const isConfirmed = nextStatus === 'CLEARED';
+
+    transaction.payerName = payerName.trim();
+    transaction.payerMobile = payerMobile ? payerMobile.trim() : '';
+    transaction.paymentDate = effectiveDate;
+    transaction.paymentMode = mode;
+    transaction.totalAmountPaise = totalPaise;
+    transaction.paymentStatus = nextStatus;
+    transaction.chequeDetails = mode === 'CHEQUE' ? {
+      ...(chequeDetails || {}),
+      chequeNumber: chequeDetails.chequeNumber.trim(),
+      bankName: chequeDetails.bankName.trim(),
+      bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
+      chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : transaction.chequeDetails?.chequeDate
+    } : undefined;
+    transaction.referenceNumber = referenceNumber ? referenceNumber.trim() : '';
+    transaction.remarks = remarks ? remarks.trim() : '';
+    if (!transaction.isBulk) {
+      transaction.singleMemberId = editedAllocations[0].memberId;
+    }
+    await transaction.save({ session });
+
+    const newAllocationSummaries = [];
+    for (const item of editedAllocations) {
+      const member = memberMap.get(String(item.memberId));
+      const itemPaise = rupeesToPaise(item.amountRupees);
+      const selectedDueIds = Array.isArray(item.selectedDueIds)
+        ? item.selectedDueIds
+        : (item.selectedDueId ? [item.selectedDueId] : []);
+      const waivedDueIds = Array.isArray(item.waivedDueIds) ? item.waivedDueIds : [];
+      const allocationId = await generateSequentialId(PaymentAllocation, 'allocationId', 'ALLOC', 5);
+      const allocation = (await PaymentAllocation.create([{
+        allocationId,
+        transactionId: transaction._id,
+        memberId: member._id,
+        allocatedAmountPaise: itemPaise,
+        status: isConfirmed ? 'CONFIRMED' : nextStatus === 'BOUNCED' ? 'REVERTED' : nextStatus === 'CANCELLED' ? 'CANCELLED' : 'PROVISIONAL',
+        selectedDueIds,
+        waivedDueIds,
+        waivePenalty: Boolean(item.waivePenalty),
+        notes: item.notes || `Edited allocation for ${member.fullName}`
+      }], { session }))[0];
+
+      if (nextStatus !== 'BOUNCED' && nextStatus !== 'CANCELLED') {
+        const applicationResult = await applyPaymentToDues({
+          memberId: member._id,
+          allocationId: allocation._id,
+          amountToApplyPaise: itemPaise,
+          isConfirmed,
+          session,
+          selectedDueIds,
+          waivePenalty: Boolean(item.waivePenalty),
+          waivedDueIds
+        });
+        allocation.waivedPenalties = applicationResult.waivedPenalties;
+        await allocation.save({ session });
+      }
+
+      if (isConfirmed) {
+        const ledgerId = await generateSequentialId(LedgerEntry, 'ledgerId', 'LED', 5);
+        await LedgerEntry.create([{
+          ledgerId,
+          memberId: member._id,
+          transactionDate: effectiveDate,
+          entryType: transaction.isBulk ? 'BULK_PAYMENT' : 'PAYMENT',
+          referenceId: transaction.transactionId,
+          description: `Edited payment received via ${mode} (Ref: ${referenceNumber || transaction.transactionId})`,
+          debitPaise: 0,
+          creditPaise: itemPaise,
+          runningBalancePaise: 0,
+          status: 'POSTED',
+          financialYearId: transaction.financialYearId
+        }], { session });
+      }
+
+      newAllocationSummaries.push({
+        memberId: String(member._id),
+        allocatedAmountPaise: itemPaise,
+        selectedDueIds: selectedDueIds.map(String),
+        waivedDueIds: waivedDueIds.map(String),
+        waivePenalty: Boolean(item.waivePenalty)
+      });
+    }
+
+    for (const memberId of affectedMemberIds) {
+      await recalculateMemberLedger(memberId, session);
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    await logAuditEvent({
+      req,
+      action: 'PAYMENT_EDITED',
+      entityType: 'PaymentTransaction',
+      entityId: transaction._id,
+      details: {
+        transactionId: transaction.transactionId,
+        previous: previousSnapshot,
+        updated: {
+          payerName: transaction.payerName,
+          payerMobile: transaction.payerMobile,
+          paymentDate: transaction.paymentDate,
+          paymentMode: transaction.paymentMode,
+          totalAmountPaise: transaction.totalAmountPaise,
+          paymentStatus: transaction.paymentStatus,
+          chequeDetails: transaction.chequeDetails?.toObject?.() || transaction.chequeDetails,
+          referenceNumber: transaction.referenceNumber,
+          remarks: transaction.remarks,
+          allocations: newAllocationSummaries
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Payment ${transaction.transactionId} updated; member dues and ledgers were synchronized.`,
+      transaction
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+}
+
 // 3. Get Payment Transaction by ID with all allocations and receipt breakdown
 async function getPaymentById(req, res, next) {
   try {
@@ -588,14 +968,25 @@ async function getPaymentById(req, res, next) {
       return res.status(404).json({ success: false, message: 'Transaction not found.' });
     }
 
-    const allocations = await PaymentAllocation.find({ transactionId: transaction._id })
+    const allocations = await PaymentAllocation.find({ transactionId: transaction._id, isCurrent: { $ne: false } })
       .populate({
         path: 'memberId',
         populate: { path: 'villageId' }
       });
 
+    const applications = await PaymentApplication.find({
+      allocationId: { $in: allocations.map((allocation) => allocation._id) }
+    }).lean();
+    const applicationsByAllocation = applications.reduce((groups, application) => {
+      const key = String(application.allocationId);
+      groups[key] = groups[key] || [];
+      groups[key].push(application);
+      return groups;
+    }, {});
+
     const formattedAllocations = allocations.map(a => ({
       allocationId: a.allocationId,
+      memberId: a.memberId?._id,
       member: a.memberId ? {
         id: a.memberId._id,
         memberId: a.memberId.memberId,
@@ -605,6 +996,15 @@ async function getPaymentById(req, res, next) {
       allocatedAmountPaise: a.allocatedAmountPaise,
       amountRupees: paiseToRupees(a.allocatedAmountPaise),
       formattedAmount: formatINR(a.allocatedAmountPaise),
+      selectedDueIds: (a.selectedDueIds?.length
+        ? a.selectedDueIds
+        : (applicationsByAllocation[String(a._id)] || [])
+          .filter((application) => application.installmentDueId && application.status !== 'REVERTED')
+          .map((application) => application.installmentDueId)
+      ).map(String),
+      waivedDueIds: (a.waivedDueIds || []).map(String),
+      waivePenalty: Boolean(a.waivePenalty),
+      notes: a.notes || '',
       status: a.status
     }));
 
@@ -672,6 +1072,7 @@ async function getPayments(req, res, next) {
 module.exports = {
   createSinglePayment,
   createBulkPayment,
+  editPayment,
   getPaymentById,
   getPayments
 };

@@ -33,6 +33,11 @@ const claimChequeSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  bankAccountNumber: {
+    type: String,
+    required: true,
+    trim: true
+  },
   chequeNumber: {
     type: String,
     required: true,

@@ -23,6 +23,32 @@ const paymentAllocationSchema = new mongoose.Schema({
     required: true,
     min: 1
   },
+  isCurrent: {
+    type: Boolean,
+    default: true
+  },
+  selectedDueIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MemberInstallmentDue'
+  }],
+  waivedDueIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MemberInstallmentDue'
+  }],
+  waivedPenalties: [{
+    penaltyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'MemberPenalty'
+    },
+    amountPaise: {
+      type: Number,
+      min: 0
+    }
+  }],
+  waivePenalty: {
+    type: Boolean,
+    default: false
+  },
   status: {
     type: String,
     enum: ['PROVISIONAL', 'CONFIRMED', 'REVERTED', 'CANCELLED'],

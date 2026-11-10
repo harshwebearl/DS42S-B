@@ -7,6 +7,7 @@ router.use(authDirector);
 
 router.post('/single', paymentController.createSinglePayment);
 router.post('/bulk', paymentController.createBulkPayment);
+router.put('/:id', paymentController.editPayment);
 router.get('/', paymentController.getPayments);
 router.get('/:id', paymentController.getPaymentById);
 

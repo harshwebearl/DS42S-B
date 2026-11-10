@@ -49,6 +49,7 @@ const paymentTransactionSchema = new mongoose.Schema({
   chequeDetails: {
     chequeNumber: { type: String, trim: true },
     bankName: { type: String, trim: true },
+    bankAccountNumber: { type: String, trim: true },
     chequeDate: { type: Date },
     depositDate: { type: Date },
     clearanceDate: { type: Date },
