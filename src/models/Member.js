@@ -64,7 +64,7 @@ const memberSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['ACTIVE', 'INACTIVE', 'DECEASED'],
+    enum: ['ACTIVE', 'INACTIVE', 'DECEASED', 'CANCELLED'],
     default: 'ACTIVE'
   },
   deathDate: {
