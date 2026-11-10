@@ -31,7 +31,7 @@ async function createVillage(req, res, next) {
       villageId,
       name: trimmedName,
       taluka: typeof taluka === 'string' ? taluka.trim() : (taluka || ''),
-      district: typeof district === 'string' && district.trim() ? district.trim() : 'Bhavnagar',
+      district: typeof district === 'string' ? district.trim() : (district || ''),
       state: typeof state === 'string' && state.trim() ? state.trim() : 'Gujarat',
       description: typeof description === 'string' ? description.trim() : (description || ''),
       status: 'ACTIVE'
@@ -132,7 +132,7 @@ async function updateVillage(req, res, next) {
     }
 
     if (taluka !== undefined) village.taluka = typeof taluka === 'string' ? taluka.trim() : (taluka || '');
-    if (district !== undefined) village.district = typeof district === 'string' && district.trim() ? district.trim() : village.district;
+    if (district !== undefined) village.district = typeof district === 'string' ? district.trim() : '';
     if (state !== undefined) village.state = typeof state === 'string' && state.trim() ? state.trim() : village.state;
     if (description !== undefined) village.description = typeof description === 'string' ? description.trim() : (description || '');
     if (status && ['ACTIVE', 'INACTIVE'].includes(status)) village.status = status;

@@ -20,8 +20,7 @@ const villageSchema = new mongoose.Schema({
   },
   district: {
     type: String,
-    trim: true,
-    default: 'Bhavnagar'
+    trim: true
   },
   state: {
     type: String,
