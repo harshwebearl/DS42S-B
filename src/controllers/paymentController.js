@@ -12,6 +12,41 @@ const { rupeesToPaise, paiseToRupees, formatINR } = require('../utils/currency')
 const { generateSequentialId } = require('../utils/idGenerator');
 const { logAuditEvent } = require('../middleware/audit');
 
+async function getInstallmentsByAllocationIds(allocationIds, session) {
+  const query = PaymentApplication.find({
+    allocationId: { $in: allocationIds },
+    installmentDueId: { $ne: null },
+    status: { $ne: 'REVERTED' }
+  }).populate({
+    path: 'installmentDueId',
+    populate: { path: 'installmentId', select: 'installmentTitle installmentNumber' }
+  });
+  if (session) query.session(session);
+
+  const applications = await query.lean();
+  const installmentsByAllocation = applications.reduce((groups, application) => {
+    const installment = application.installmentDueId?.installmentId;
+    if (!installment) return groups;
+
+    const allocationKey = String(application.allocationId);
+    const installmentList = groups[allocationKey] || [];
+    if (!installmentList.some((item) => String(item._id) === String(installment._id))) {
+      installmentList.push({
+        _id: installment._id,
+        installmentTitle: installment.installmentTitle,
+        installmentNumber: installment.installmentNumber
+      });
+    }
+    groups[allocationKey] = installmentList;
+    return groups;
+  }, {});
+  Object.values(installmentsByAllocation).forEach((installments) => {
+    installments.sort((left, right) => left.installmentNumber - right.installmentNumber);
+    installments.forEach((installment) => delete installment._id);
+  });
+  return installmentsByAllocation;
+}
+
 // Helper to apply payment amount to member dues sequentially
 async function applyPaymentToDues({ memberId, allocationId, amountToApplyPaise, isConfirmed, session, selectedDueIds, waivePenalty = false, waivedDueIds = [] }) {
   let remainingPaise = amountToApplyPaise;
@@ -253,6 +288,7 @@ async function createSinglePayment(req, res, next) {
       chequeDetails: isCheque ? {
         chequeNumber: chequeDetails.chequeNumber.trim(),
         bankName: chequeDetails.bankName.trim(),
+        ifscCode: chequeDetails.ifscCode ? chequeDetails.ifscCode.trim().toUpperCase() : '',
         bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
         chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : new Date()
       } : undefined,
@@ -287,6 +323,7 @@ async function createSinglePayment(req, res, next) {
       waivePenalty: Boolean(waivePenalty),
       waivedDueIds
     });
+    const appliedInstallments = await getInstallmentsByAllocationIds([allocation._id], session);
     allocation.waivedPenalties = applicationResult.waivedPenalties;
     await allocation.save({ session });
 
@@ -344,6 +381,7 @@ async function createSinglePayment(req, res, next) {
         paymentStatus: transaction.paymentStatus,
         chequeDetails: transaction.chequeDetails,
         referenceNumber: transaction.referenceNumber,
+        installments: appliedInstallments[String(allocation._id)] || [],
         member: {
           memberId: member.memberId,
           fullName: member.fullName,
@@ -475,6 +513,7 @@ async function createBulkPayment(req, res, next) {
       chequeDetails: isCheque ? {
         chequeNumber: chequeDetails.chequeNumber.trim(),
         bankName: chequeDetails.bankName.trim(),
+        ifscCode: chequeDetails.ifscCode ? chequeDetails.ifscCode.trim().toUpperCase() : '',
         bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
         chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : new Date()
       } : undefined,
@@ -540,6 +579,7 @@ async function createBulkPayment(req, res, next) {
       }
 
       createdAllocations.push({
+        allocationDocumentId: String(allocation._id),
         allocationId: allocation.allocationId,
         memberId: mem.memberId,
         fullName: mem.fullName,
@@ -548,6 +588,10 @@ async function createBulkPayment(req, res, next) {
         formattedAmount: formatINR(allocPaise)
       });
     }
+    const installmentsByAllocation = await getInstallmentsByAllocationIds(
+      createdAllocations.map((allocation) => allocation.allocationDocumentId),
+      session
+    );
 
     await session.commitTransaction();
     session.endSession();
@@ -583,7 +627,10 @@ async function createBulkPayment(req, res, next) {
         paymentStatus: transaction.paymentStatus,
         chequeDetails: transaction.chequeDetails,
         referenceNumber: transaction.referenceNumber,
-        allocations: createdAllocations
+        allocations: createdAllocations.map(({ allocationDocumentId, ...allocation }) => ({
+          ...allocation,
+          installments: installmentsByAllocation[allocationDocumentId] || []
+        }))
       }
     });
   } catch (err) {
@@ -843,6 +890,7 @@ async function editPayment(req, res, next) {
       ...(chequeDetails || {}),
       chequeNumber: chequeDetails.chequeNumber.trim(),
       bankName: chequeDetails.bankName.trim(),
+      ifscCode: chequeDetails.ifscCode ? chequeDetails.ifscCode.trim().toUpperCase() : '',
       bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
       chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : transaction.chequeDetails?.chequeDate
     } : undefined;
@@ -983,6 +1031,9 @@ async function getPaymentById(req, res, next) {
       groups[key].push(application);
       return groups;
     }, {});
+    const installmentsByAllocation = await getInstallmentsByAllocationIds(
+      allocations.map((allocation) => allocation._id)
+    );
 
     const formattedAllocations = allocations.map(a => ({
       allocationId: a.allocationId,
@@ -996,6 +1047,7 @@ async function getPaymentById(req, res, next) {
       allocatedAmountPaise: a.allocatedAmountPaise,
       amountRupees: paiseToRupees(a.allocatedAmountPaise),
       formattedAmount: formatINR(a.allocatedAmountPaise),
+      installments: installmentsByAllocation[String(a._id)] || [],
       selectedDueIds: (a.selectedDueIds?.length
         ? a.selectedDueIds
         : (applicationsByAllocation[String(a._id)] || [])

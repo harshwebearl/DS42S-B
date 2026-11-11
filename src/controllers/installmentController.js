@@ -124,12 +124,26 @@ async function getInstallments(req, res, next) {
       }
     ]);
 
+    const activeMemberCounts = await Member.aggregate([
+      { $match: { status: 'ACTIVE' } },
+      { $group: { _id: '$villageId', count: { $sum: 1 } } }
+    ]);
+    const activeMembersByVillage = {};
+    let activeMemberCount = 0;
+    activeMemberCounts.forEach(({ _id, count }) => {
+      activeMembersByVillage[String(_id)] = count;
+      activeMemberCount += count;
+    });
+
     const statsMap = {};
     duesStats.forEach(s => {
       statsMap[String(s._id)] = s;
     });
 
     const enriched = installments.map(i => {
+      const eligibleMemberCount = i.applicabilityRule === 'VILLAGE_SPECIFIC' && i.targetVillages?.length > 0
+        ? i.targetVillages.reduce((count, village) => count + (activeMembersByVillage[String(village._id)] || 0), 0)
+        : activeMemberCount;
       const stats = statsMap[String(i._id)] || {
         totalMembers: 0,
         totalDemandPaise: 0,
@@ -141,6 +155,7 @@ async function getInstallments(req, res, next) {
       };
       return {
         ...i,
+        eligibleMemberCount,
         amountRupees: paiseToRupees(i.amountPaise),
         formattedAmount: formatINR(i.amountPaise),
         stats: {

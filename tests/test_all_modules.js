@@ -182,6 +182,9 @@ async function runTests() {
       amountRupees: 500,
       remarks: 'Payment for Installment 4'
     }, { headers });
+    if (!singlePayRes.data.receipt.installments?.length) {
+      throw new Error('Single payment receipt must list the installment receiving the payment.');
+    }
     console.log(`✓ Cash payment received: Receipt #${singlePayRes.data.receipt.transactionId} for ${singlePayRes.data.receipt.totalAmountINR}`);
     const singleTxn = (await axios.get(`${BASE_URL}/payments?search=${singlePayRes.data.receipt.transactionId}`, { headers })).data.transactions[0];
     const singleDetails = (await axios.get(`${BASE_URL}/payments/${singleTxn._id}`, { headers })).data;
@@ -207,9 +210,16 @@ async function runTests() {
     // MODULE 9: BULK / GROUP PAYMENT ALLOCATION (CRITICAL)
     // -------------------------------------------------------------
     console.log('\n[TEST 9] Testing Bulk / Group Payment Allocation (CRITICAL MODULE)...');
-    // Fetch 5 members
+    // Ensure the test fixture has the five members required for the group allocation.
     const membersList = await axios.get(`${BASE_URL}/members?limit=5`, { headers });
-    const fiveMembers = membersList.data.members.slice(0, 5);
+    const fiveMembers = [...membersList.data.members.slice(0, 5)];
+    while (fiveMembers.length < 5) {
+      const newMemberRes = await axios.post(`${BASE_URL}/members`, {
+        fullName: `Group Payment Test Member ${fiveMembers.length + 1}`
+      }, { headers });
+      fiveMembers.push(newMemberRes.data.member);
+    }
+    await axios.post(`${BASE_URL}/installments/${testInst._id}/generate-dues`, {}, { headers });
 
     // Test STRICT VALIDATION: Mismatch between Cheque Amount and Allocations sum
     try {
@@ -257,6 +267,9 @@ async function runTests() {
     }, { headers });
 
     const bulkReceipt = validBulkRes.data.receipt;
+    if (!bulkReceipt.allocations.some((allocation) => allocation.installments?.length)) {
+      throw new Error('Bulk payment receipt must list the installment receiving the allocation.');
+    }
     console.log(`✓ Master Bulk Cheque Transaction created: ${bulkReceipt.transactionId}`);
     console.log(`✓ Total Amount: ${bulkReceipt.formattedTotalAmount}`);
     console.log(`✓ Linked Allocations Count: ${bulkReceipt.allocations.length}`);
