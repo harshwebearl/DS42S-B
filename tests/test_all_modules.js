@@ -1,6 +1,8 @@
 const axios = require('axios');
 const xlsx = require('xlsx');
+const mongoose = require('mongoose');
 const { startServer } = require('../server');
+const MemberInstallmentDue = require('../src/models/MemberInstallmentDue');
 
 const BASE_URL = 'http://localhost:5000/api';
 let authToken = '';
@@ -535,6 +537,23 @@ async function runTests() {
     console.log('\n[TEST 16] Testing Dashboard Aggregations...');
     const dashRes = await axios.get(`${BASE_URL}/dashboard/stats`, { headers });
     const stats = dashRes.data.data;
+    const currentYearDemand = await MemberInstallmentDue.aggregate([
+      { $match: { financialYearId: new mongoose.Types.ObjectId(currentFY._id) } },
+      {
+        $lookup: {
+          from: 'members',
+          localField: 'memberId',
+          foreignField: '_id',
+          as: 'member'
+        }
+      },
+      { $unwind: '$member' },
+      { $match: { 'member.status': 'ACTIVE' } },
+      { $group: { _id: null, totalDemandPaise: { $sum: '$originalAmountPaise' } } }
+    ]);
+    if (stats.installmentStats.totalDemandPaise !== (currentYearDemand[0]?.totalDemandPaise || 0)) {
+      throw new Error('Dashboard demand must match current financial-year installment dues for active members.');
+    }
     console.log(`✓ Total Members: ${stats.memberStats.total}`);
     console.log(`✓ Installment Demand: ${stats.installmentStats.formattedDemand}`);
     console.log(`✓ Installment Collected: ${stats.installmentStats.formattedCollected}`);

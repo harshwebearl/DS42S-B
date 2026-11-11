@@ -44,31 +44,36 @@ async function getDashboardStats(req, res, next) {
       { $limit: 8 }
     ]);
 
-    // 2. Installment Statistics
-    const duesAgg = await MemberInstallmentDue.aggregate([
-      {
-        $lookup: {
-          from: 'members',
-          localField: 'memberId',
-          foreignField: '_id',
-          as: 'member'
-        }
-      },
-      { $unwind: '$member' },
-      { $match: { 'member.status': 'ACTIVE' } },
-      {
-        $group: {
-          _id: null,
-          totalDemandPaise: { $sum: '$originalAmountPaise' },
-          totalCollectedPaise: { $sum: '$paidAmountPaise' },
-          totalOutstandingPaise: { $sum: '$outstandingAmountPaise' },
-          overdueCount: { $sum: { $cond: [{ $eq: ['$status', 'OVERDUE'] }, 1, 0] } },
-          partialCount: { $sum: { $cond: [{ $eq: ['$status', 'PARTIAL'] }, 1, 0] } },
-          paidCount: { $sum: { $cond: [{ $eq: ['$status', 'PAID'] }, 1, 0] } },
-          pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } }
-        }
-      }
-    ]);
+    // 2. Current financial year installment statistics for active members
+    const currentFinancialYear = await FinancialYear.findOne({ isCurrent: true })
+      || await FinancialYear.findOne({ status: 'ACTIVE' }).sort({ startDate: -1 });
+    const duesAgg = currentFinancialYear
+      ? await MemberInstallmentDue.aggregate([
+          { $match: { financialYearId: currentFinancialYear._id } },
+          {
+            $lookup: {
+              from: 'members',
+              localField: 'memberId',
+              foreignField: '_id',
+              as: 'member'
+            }
+          },
+          { $unwind: '$member' },
+          { $match: { 'member.status': 'ACTIVE' } },
+          {
+            $group: {
+              _id: null,
+              totalDemandPaise: { $sum: '$originalAmountPaise' },
+              totalCollectedPaise: { $sum: '$paidAmountPaise' },
+              totalOutstandingPaise: { $sum: '$outstandingAmountPaise' },
+              overdueCount: { $sum: { $cond: [{ $eq: ['$status', 'OVERDUE'] }, 1, 0] } },
+              partialCount: { $sum: { $cond: [{ $eq: ['$status', 'PARTIAL'] }, 1, 0] } },
+              paidCount: { $sum: { $cond: [{ $eq: ['$status', 'PAID'] }, 1, 0] } },
+              pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, 1, 0] } }
+            }
+          }
+        ])
+      : [];
     const installmentStats = duesAgg[0] || {
       totalDemandPaise: 0,
       totalCollectedPaise: 0,
