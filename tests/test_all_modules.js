@@ -255,7 +255,6 @@ async function runTests() {
       chequeDetails: {
         chequeNumber: 'CHQ-882233',
         bankName: 'HDFC Bank, Mahuva Branch',
-        bankAccountNumber: '9876543210',
         chequeDate: '2026-03-05'
       },
       remarks: 'Family Group Installment 1 Cheque',
@@ -279,6 +278,10 @@ async function runTests() {
     const txnDetails = await axios.get(`${BASE_URL}/payments/${validBulkRes.data.receipt.transactionId ? (await axios.get(`${BASE_URL}/payments?search=CHQ-882233`, { headers })).data.transactions[0]._id : ''}`, { headers });
     if (txnDetails.data.allocations.length !== 5) {
       throw new Error('Master transaction must have exactly 5 linked allocations!');
+    }
+    const bulkPaymentList = await axios.get(`${BASE_URL}/payments?search=CHQ-882233`, { headers });
+    if (bulkPaymentList.data.transactions[0]?.memberIds?.length !== 5) {
+      throw new Error('Payment Management transactions must include all bulk member IDs.');
     }
     console.log('✓ Verified: Exactly 1 Master Transaction with 5 relational PaymentAllocation records in MongoDB.');
 
@@ -573,6 +576,10 @@ async function runTests() {
     const caWorkbook = xlsx.read(Buffer.from(caExcelRes.data), { type: 'buffer' });
     if (caWorkbook.SheetNames.join(',') !== 'Cheque,Online') {
       throw new Error('CA payment export must contain separate Cheque and Online sheets.');
+    }
+    const chequeExportRows = xlsx.utils.sheet_to_json(caWorkbook.Sheets.Cheque);
+    if (!chequeExportRows.some((row) => row['Member ID'] && row['Member ID'] !== '-')) {
+      throw new Error('CA cheque export must include the allocated member IDs.');
     }
     console.log('✓ CA payment workbook contains separate Cheque and Online sheets.');
 

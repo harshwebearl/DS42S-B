@@ -241,17 +241,31 @@ async function generateReportData(reportType, query = {}) {
         .sort({ paymentDate: -1 })
         .lean();
 
+      const allocations = txns.length
+        ? await PaymentAllocation.find({
+            transactionId: { $in: txns.map((transaction) => transaction._id) },
+            isCurrent: { $ne: false }
+          }).populate('memberId', 'memberId fullName').lean()
+        : [];
+      const allocationsByTransaction = allocations.reduce((groups, allocation) => {
+        const key = String(allocation.transactionId);
+        groups[key] = groups[key] || [];
+        groups[key].push(allocation);
+        return groups;
+      }, {});
       const rows = [];
       for (const t of txns) {
-        const count = await PaymentAllocation.countDocuments({ transactionId: t._id, isCurrent: { $ne: false } });
+        const transactionAllocations = allocationsByTransaction[String(t._id)] || [];
         rows.push({
           'Bulk Transaction ID': t.transactionId,
+          'Member ID(s)': transactionAllocations.map((allocation) => allocation.memberId?.memberId).filter(Boolean).join(', ') || '-',
+          'Member Name(s)': transactionAllocations.map((allocation) => allocation.memberId?.fullName).filter(Boolean).join(', ') || '-',
           'Payer Name': t.payerName,
           'Payer Mobile': t.payerMobile || '-',
           'Payment Date': new Date(t.paymentDate).toLocaleDateString(),
           'Payment Mode': t.paymentMode,
           'Total Cheque/Receipt Amount (₹)': paiseToRupees(t.totalAmountPaise),
-          'Allocated Members Count': count,
+          'Allocated Members Count': transactionAllocations.length,
           'Cheque Number': t.chequeDetails?.chequeNumber || '-',
           'Bank Name': t.chequeDetails?.bankName || '-',
           'Bank Account Number': t.chequeDetails?.bankAccountNumber || '-',
@@ -488,8 +502,8 @@ async function exportReportExcel(req, res, next) {
         ...bulkPayments.map((row) => ({
           recordType: 'Bulk',
           transactionId: row['Bulk Transaction ID'],
-          memberId: '-',
-          memberName: '-',
+          memberId: row['Member ID(s)'],
+          memberName: row['Member Name(s)'],
           village: '-',
           payerName: row['Payer Name'],
           payerMobile: row['Payer Mobile'],

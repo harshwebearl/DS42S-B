@@ -266,10 +266,10 @@ async function createSinglePayment(req, res, next) {
     const isConfirmed = !isCheque; // Cash, UPI, and Bank Transfer clear immediately
 
     if (isCheque) {
-      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName || !chequeDetails.bankAccountNumber?.trim()) {
+      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ success: false, message: 'Cheque Number, Bank Name, and Bank Account Number are required for cheque payments.' });
+        return res.status(400).json({ success: false, message: 'Cheque Number and Bank Name are required for cheque payments.' });
       }
     }
 
@@ -289,7 +289,6 @@ async function createSinglePayment(req, res, next) {
         chequeNumber: chequeDetails.chequeNumber.trim(),
         bankName: chequeDetails.bankName.trim(),
         ifscCode: chequeDetails.ifscCode ? chequeDetails.ifscCode.trim().toUpperCase() : '',
-        bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
         chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : new Date()
       } : undefined,
       referenceNumber: referenceNumber ? referenceNumber.trim() : '',
@@ -434,10 +433,10 @@ async function createBulkPayment(req, res, next) {
     const isConfirmed = !isCheque;
 
     if (isCheque) {
-      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName || !chequeDetails.bankAccountNumber?.trim()) {
+      if (!chequeDetails || !chequeDetails.chequeNumber || !chequeDetails.bankName) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ success: false, message: 'Cheque Number, Bank Name, and Bank Account Number are required for bulk cheque payment.' });
+        return res.status(400).json({ success: false, message: 'Cheque Number and Bank Name are required for bulk cheque payment.' });
       }
     }
 
@@ -514,7 +513,6 @@ async function createBulkPayment(req, res, next) {
         chequeNumber: chequeDetails.chequeNumber.trim(),
         bankName: chequeDetails.bankName.trim(),
         ifscCode: chequeDetails.ifscCode ? chequeDetails.ifscCode.trim().toUpperCase() : '',
-        bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
         chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : new Date()
       } : undefined,
       referenceNumber: referenceNumber ? referenceNumber.trim() : '',
@@ -703,10 +701,10 @@ async function editPayment(req, res, next) {
       session.endSession();
       return res.status(400).json({ success: false, message: 'A single-member payment must have exactly one member allocation.' });
     }
-    if (mode === 'CHEQUE' && (!chequeDetails?.chequeNumber?.trim() || !chequeDetails?.bankName?.trim() || !chequeDetails?.bankAccountNumber?.trim())) {
+    if (mode === 'CHEQUE' && (!chequeDetails?.chequeNumber?.trim() || !chequeDetails?.bankName?.trim())) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ success: false, message: 'Cheque number, bank name, and bank account number are required for cheque payments.' });
+      return res.status(400).json({ success: false, message: 'Cheque number and bank name are required for cheque payments.' });
     }
 
     const priorReallocation = await AuditLog.findOne({
@@ -891,7 +889,6 @@ async function editPayment(req, res, next) {
       chequeNumber: chequeDetails.chequeNumber.trim(),
       bankName: chequeDetails.bankName.trim(),
       ifscCode: chequeDetails.ifscCode ? chequeDetails.ifscCode.trim().toUpperCase() : '',
-      bankAccountNumber: chequeDetails.bankAccountNumber.trim(),
       chequeDate: chequeDetails.chequeDate ? new Date(chequeDetails.chequeDate) : transaction.chequeDetails?.chequeDate
     } : undefined;
     transaction.referenceNumber = referenceNumber ? referenceNumber.trim() : '';
@@ -1103,8 +1100,23 @@ async function getPayments(req, res, next) {
       .limit(parseInt(limit))
       .lean();
 
+    const bulkTransactionIds = transactions.filter((transaction) => transaction.isBulk).map((transaction) => transaction._id);
+    const bulkAllocations = bulkTransactionIds.length
+      ? await PaymentAllocation.find({
+          transactionId: { $in: bulkTransactionIds },
+          isCurrent: { $ne: false }
+        }).populate('memberId', 'memberId fullName').lean()
+      : [];
+    const memberIdsByTransaction = bulkAllocations.reduce((groups, allocation) => {
+      const key = String(allocation.transactionId);
+      groups[key] = groups[key] || [];
+      if (allocation.memberId?.memberId) groups[key].push(allocation.memberId.memberId);
+      return groups;
+    }, {});
+
     const formatted = transactions.map(t => ({
       ...t,
+      memberIds: t.isBulk ? (memberIdsByTransaction[String(t._id)] || []) : [],
       formattedTotalAmount: formatINR(t.totalAmountPaise),
       totalAmountRupees: paiseToRupees(t.totalAmountPaise)
     }));

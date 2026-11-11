@@ -47,6 +47,16 @@ async function getDashboardStats(req, res, next) {
     // 2. Installment Statistics
     const duesAgg = await MemberInstallmentDue.aggregate([
       {
+        $lookup: {
+          from: 'members',
+          localField: 'memberId',
+          foreignField: '_id',
+          as: 'member'
+        }
+      },
+      { $unwind: '$member' },
+      { $match: { 'member.status': 'ACTIVE' } },
+      {
         $group: {
           _id: null,
           totalDemandPaise: { $sum: '$originalAmountPaise' },
